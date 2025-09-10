@@ -16,6 +16,8 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # 为了generate_release_notes需要完整历史
 
     - name: Install dependencies
       run: |
@@ -69,23 +71,24 @@ jobs:
         tar -czf clang-toolchain.tar.gz bin/
         # 可选：打包整个install/ 如果需要lib等
         # mv clang-toolchain.tar.gz $GITHUB_WORKSPACE/
+        # 移动到workspace根目录，便于上传
+        mv clang-toolchain.tar.gz ${{ github.workspace }}
 
     - name: Upload build artifacts (for testing)
       uses: actions/upload-artifact@v4
       with:
         name: clang-toolchain-${{ github.sha }}
-        path: llvm-project/install/clang-toolchain.tar.gz
+        path: clang-toolchain.tar.gz
         retention-days: 30  # 供下载测试
 
-    - name: Create Release (only on tags)
+    - name: Create or Update Release (only on tags)
       if: startsWith(github.ref, 'refs/tags/')
-      id: create_release
-      uses: actions/create-release@v4
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      uses: softprops/action-gh-release@v2
       with:
+        files: clang-toolchain.tar.gz  # 上传打包文件
+        generate_release_notes: true  # 自动生成release notes
         tag_name: ${{ github.ref }}
-        release_name: LLVM Clang Toolchain ${{ github.ref }}
+        name: LLVM Clang Toolchain ${{ github.ref }}
         body: |
           Custom-built LLVM/Clang stable version supporting aarch64 and riscv64.
           - Kernel 6.6 compatible.
@@ -93,14 +96,5 @@ jobs:
           Download clang-toolchain.tar.gz for use.
         draft: false
         prerelease: false
-
-    - name: Upload Release Asset
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: actions/upload-release-asset@v1
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: llvm-project/install/clang-toolchain.tar.gz
-        asset_name: clang-toolchain-${{ github.ref }}.tar.gz
-        asset_content_type: application/gzip
