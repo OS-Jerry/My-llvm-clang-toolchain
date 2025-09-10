@@ -1,0 +1,185 @@
+name: Build Linux Kernel with LLVM
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # 每天UTC午夜检查一次
+  workflow_dispatch:  # 手动触发，便于测试
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+    outputs:
+      llvm_version: ${{ steps.extract-llvm.outputs.version }}
+      has_llvm: ${{ steps.check-llvm.outputs.has_llvm }}
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install dependencies for API and build
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y jq curl build-essential bc bison flex libssl-dev
+        # 交叉sysroot for aarch64 and riscv64
+        sudo apt-get install -y libc6-dev-arm64-cross libc6-dev-riscv64-cross
+        # Kernel build tools
+        sudo apt-get install -y libncurses-dev libelf-dev python3
+
+    - name: Check for latest LLVM Release
+      id: check-llvm
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # 使用GitHub API获取releases，找最新的clang-toolchain.tar.gz
+        LATEST_RELEASE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+          https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r '.tag_name // empty')
+        
+        if [ -z "$LATEST_RELEASE" ] || [[ ! "$LATEST_RELEASE" =~ ^llvmorg- ]]; then
+          echo "No LLVM release found, skipping kernel build."
+          echo "has_llvm=false" >> $GITHUB_OUTPUT
+          echo "version=" >> $GITHUB_OUTPUT
+          exit 0  # Skip job
+        fi
+        
+        echo "Found LLVM release: $LATEST_RELEASE"
+        echo "has_llvm=true" >> $GITHUB_OUTPUT
+        echo "version=$LATEST_RELEASE" >> $GITHUB_OUTPUT
+
+    - name: Extract LLVM version
+      id: extract-llvm
+      if: steps.check-llvm.outputs.has_llvm == 'true'
+      run: |
+        echo "llvm_tag=${{ steps.check-llvm.outputs.version }}" >> $GITHUB_OUTPUT
+
+    - name: Download LLVM Toolchain
+      if: steps.check-llvm.outputs.has_llvm == 'true'
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # 下载最新Release的clang-toolchain.tar.gz
+        curl -L -H "Authorization: token $GITHUB_TOKEN" \
+          -o clang-toolchain.tar.gz \
+          https://api.github.com/repos/${{ github.repository }}/releases/latest/assets?name=clang-toolchain-${{ steps.check-llvm.outputs.version }}.tar.gz
+        
+        # 检查下载成功
+        if [ ! -f clang-toolchain.tar.gz ]; then
+          echo "Failed to download LLVM toolchain, skipping."
+          exit 1
+        fi
+        tar -xzf clang-toolchain.tar.gz -C llvm-toolchain/
+        echo "LLVM_PATH=$GITHUB_WORKSPACE/llvm-toolchain/bin" >> $GITHUB_ENV
+
+    - name: Build Kernel for aarch64
+      if: steps.check-llvm.outputs.has_llvm == 'true'
+      run: |
+        export PATH="${{ env.LLVM_PATH }}:$PATH"
+        # 下载Kernel 6.6
+        git clone --depth 1 --branch v6.6 https://github.com/torvalds/linux.git kernel
+        cd kernel
+        # 默认配置
+        make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+        # 启用KVM (defconfig已含，但显式确认)
+        scripts/config --enable CONFIG_KVM
+        scripts/config --enable CONFIG_KVM_ARM_HOST
+        # 交叉编译，使用Clang
+        make ARCH=arm64 \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          CC=clang \
+          LD=ld.lld \
+          LLVM=1 \
+          -j$(nproc) \
+          vmlinux modules \
+          --sysroot=/usr/aarch64-linux-gnu
+        # 打包 (Image for boot, vmlinux, modules)
+        mkdir -p kernel-output-aarch64
+        cp arch/arm64/boot/Image kernel-output-aarch64/
+        cp vmlinux kernel-output-aarch64/
+        tar -czf ../kernel-aarch64.tar.gz -C kernel-output-aarch64/ .
+        cd ..
+
+    - name: Build Kernel for riscv64
+      if: steps.check-llvm.outputs.has_llvm == 'true'
+      run: |
+        export PATH="${{ env.LLVM_PATH }}:$PATH"
+        cd kernel  # 复用aarch64下载的源
+        # 默认配置 for riscv
+        make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- defconfig
+        # 启用KVM
+        scripts/config --enable CONFIG_KVM
+        scripts/config --enable CONFIG_RISCV_VIRTIO_BALLOON
+        # 交叉编译
+        make ARCH=riscv \
+          CROSS_COMPILE=riscv64-linux-gnu- \
+          CC=clang \
+          LD=ld.lld \
+          LLVM=1 \
+          -j$(nproc) \
+          vmlinux modules \
+          --sysroot=/usr/riscv64-linux-gnu
+        # 打包
+        mkdir -p kernel-output-riscv64
+        cp vmlinux kernel-output-riscv64/
+        # RISC-V用Image代替bzImage
+        cp arch/riscv/boot/Image kernel-output-riscv64/ || true  # 如果存在
+        tar -czf ../kernel-riscv64.tar.gz -C kernel-output-riscv64/ .
+        cd ..
+
+    - name: Package and name artifacts
+      if: steps.check-llvm.outputs.has_llvm == 'true'
+      run: |
+        KERNEL_VER="v6.6"
+        CONFIG_TYPE="defconfig"
+        LLVM_VER="${{ steps.check-llvm.outputs.version }}"
+        
+        # 重命名
+        mv kernel/kernel-aarch64.tar.gz "${LLVM_VER}-${KERNEL_VER}-${CONFIG_TYPE}-aarch64.tar.gz"
+        mv kernel/kernel-riscv64.tar.gz "${LLVM_VER}-${KERNEL_VER}-${CONFIG_TYPE}-riscv64.tar.gz"
+        
+        # 上传artifact供测试
+        echo "Artifacts ready: ${{LLVM_VER}}-${KERNEL_VER}-${CONFIG_TYPE}-*.tar.gz"
+
+    - name: Upload Kernel Artifacts
+      if: steps.check-llvm.outputs.has_llvm == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel-${{ steps.check-llvm.outputs.version }}-v6.6-defconfig
+        path: |
+          llvmorg* -v6.6-defconfig-*.tar.gz  # 匹配命名
+        retention-days: 30
+
+    - name: Create Kernel Releases
+      if: steps.check-llvm.outputs.has_llvm == 'true'
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        KERNEL_VER="v6.6"
+        CONFIG_TYPE="defconfig"
+        LLVM_VER="${{ steps.check-llvm.outputs.version }}"
+        
+        # 对于aarch64
+        AARCH64_TAG="kernel-${LLVM_VER}-${KERNEL_VER}-${CONFIG_TYPE}-aarch64"
+        curl -X POST -H "Authorization: token $GITHUB_TOKEN" \
+          https://api.github.com/repos/${{ github.repository }}/releases \
+          -d "{\"tag_name\":\"$AARCH64_TAG\",\"name\":\"Kernel $AARCH64_TAG\",\"body\":\"Built with LLVM $LLVM_VER for aarch64.\n- Default config (defconfig).\n- Includes KVM support.\nDownload *.tar.gz for Image/vmlinux/modules.\",\"draft\":false,\"prerelease\":false}"
+        
+        # 上传aarch64 asset
+        UPLOAD_URL=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+          https://api.github.com/repos/${{ github.repository }}/releases/tags/$AARCH64_TAG | jq -r .upload_url)
+        UPLOAD_URL=${UPLOAD_URL//\{?name,label\} }
+        curl -X POST -H "Authorization: token $GITHUB_TOKEN" \
+          -H "Content-Type: application/gzip" \
+          --data-binary @"${LLVM_VER}-${KERNEL_VER}-${CONFIG_TYPE}-aarch64.tar.gz" \
+          "$UPLOAD_URL?name=${LLVM_VER}-${KERNEL_VER}-${CONFIG_TYPE}-aarch64.tar.gz"
+        
+        # 类似对于riscv64
+        RISCV64_TAG="kernel-${LLVM_VER}-${KERNEL_VER}-${CONFIG_TYPE}-riscv64"
+        curl -X POST -H "Authorization: token $GITHUB_TOKEN" \
+          https://api.github.com/repos/${{ github.repository }}/releases \
+          -d "{\"tag_name\":\"$RISCV64_TAG\",\"name\":\"Kernel $RISCV64_TAG\",\"body\":\"Built with LLVM $LLVM_VER for riscv64.\n- Default config (defconfig).\n- Includes KVM support.\nDownload *.tar.gz for Image/vmlinux/modules.\",\"draft\":false,\"prerelease\":false}"
+        
+        UPLOAD_URL=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+          https://api.github.com/repos/${{ github.repository }}/releases/tags/$RISCV64_TAG | jq -r .upload_url)
+        UPLOAD_URL=${UPLOAD_URL//\{?name,label\} }
+        curl -X POST -H "Authorization: token $GITHUB_TOKEN" \
+          -H "Content-Type: application/gzip" \
+          --data-binary @"${LLVM_VER}-${KERNEL_VER}-${CONFIG_TYPE}-riscv64.tar.gz" \
+          "$UPLOAD_URL?name=${LLVM_VER}-${KERNEL_VER}-${CONFIG_TYPE}-riscv64.tar.gz"
