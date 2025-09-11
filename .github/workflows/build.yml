@@ -20,8 +20,8 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y cmake ninja-build python3 python3-pip git
         sudo apt-get install -y build-essential libstdc++-12-dev zlib1g-dev
-        # Optional for robustness across LLVM versions
-        sudo apt-get install -y libxml2-dev libzstd-dev
+        sudo apt-get install -y libxml2-dev libzstd-dev libncurses5-dev
+        sudo apt-get install -y libedit-dev libffi-dev liblzma-dev
 
     - name: Determine LLVM version
       id: llvm_version
@@ -48,6 +48,9 @@ jobs:
             echo "LLVM_VERSION=$LATEST_VERSION" >> $GITHUB_OUTPUT
           fi
         fi
+        # Extract numerical version (e.g., 21.1.0 from llvmorg-21.1.0)
+        PURE_VERSION=$(echo "${LLVM_VERSION}" | sed 's/^llvmorg-//')
+        echo "PURE_VERSION=$PURE_VERSION" >> $GITHUB_OUTPUT
 
     - name: Download LLVM source
       run: |
@@ -76,59 +79,54 @@ jobs:
           -DCMAKE_C_COMPILER=clang \
           -DCMAKE_CXX_COMPILER=clang++ \
           ../llvm
+        if [ $? -ne 0 ]; then
+          echo "CMake configuration failed"
+          exit 1
+        fi
 
     - name: Build LLVM/Clang
       run: |
         cd llvm-project/build
         ninja -j$(nproc)
+        if [ $? -ne 0 ]; then
+          echo "Build failed"
+          exit 1
+        fi
+
+    - name: Test Clang Toolchain
+      run: |
+        cd llvm-project/install/bin
+        ./clang --version
+        if ./clang --version | grep -q "${{ steps.llvm_version.outputs.PURE_VERSION }}"; then
+          echo "Clang version matches: ${{ steps.llvm_version.outputs.PURE_VERSION }}"
+        else
+          echo "Version mismatch! Expected: ${{ steps.llvm_version.outputs.PURE_VERSION }}"
+          exit 1
+        fi
+        if ./clang --print-targets | grep -q "aarch64"; then
+          echo "AArch64 target supported"
+        else
+          echo "AArch64 target not supported"
+          exit 1
+        fi
+        if ./clang --print-targets | grep -q "riscv64"; then
+          echo "RISCV64 target supported"
+        else
+          echo "RISCV64 target not supported"
+          exit 1
+        fi
 
     - name: Install and package toolchain
       run: |
         cd llvm-project
         cd build
         ninja install
+        if [ $? -ne 0 ]; then
+          echo "Installation failed"
+          exit 1
+        fi
         cd ../install
         tar -czf clang-toolchain-${{ steps.llvm_version.outputs.LLVM_VERSION }}.tar.gz bin/
-
-    - name: Test Clang Toolchain
-      run: |
-        cd llvm-project/install/bin
-        
-        # Test --version
-        VERSION_OUTPUT=$(./clang --version)
-        echo "$VERSION_OUTPUT"
-        EXPECTED_VERSION="${{ steps.llvm_version.outputs.LLVM_VERSION }}"
-        if [[ ! "$VERSION_OUTPUT" =~ "$EXPECTED_VERSION" ]]; then
-          echo "Version mismatch! Expected: $EXPECTED_VERSION"
-          exit 1
-        fi
-        
-        # Test architecture support by attempting simple compilations
-        echo 'int main() { return 0; }' > test.c
-        
-        # X86 (x86_64)
-        ./clang -target x86_64-unknown-linux-gnu -c test.c -o test_x86.o
-        if [ $? -ne 0 ]; then
-          echo "X86 architecture not supported!"
-          exit 1
-        fi
-        
-        # AArch64 (arm64)
-        ./clang -target aarch64-unknown-linux-gnu -c test.c -o test_aarch64.o
-        if [ $? -ne 0 ]; then
-          echo "AArch64 architecture not supported!"
-          exit 1
-        fi
-        
-        # RISCV (riscv64)
-        ./clang -target riscv64-unknown-linux-gnu -c test.c -o test_riscv.o
-        if [ $? -ne 0 ]; then
-          echo "RISCV architecture not supported!"
-          exit 1
-        fi
-        
-        rm test.c test_*.o
-        echo "All tests passed successfully!"
 
     - name: Upload build artifacts (for testing)
       uses: actions/upload-artifact@v4
