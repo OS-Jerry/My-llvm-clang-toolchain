@@ -3,7 +3,10 @@ name: Build LLVM/Clang Toolchain
 on:
   push:
     branches: [ main ]
-    tags: [ '*' ]  # 匹配任何tag，如llvmorg-21.1.0
+    tags: [ '*' ]
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -17,16 +20,15 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y cmake ninja-build python3 python3-pip git
         sudo apt-get install -y build-essential libstdc++-12-dev zlib1g-dev
+        # Optional for robustness across LLVM versions
+        sudo apt-get install -y libxml2-dev libzstd-dev
 
     - name: Determine LLVM version
       id: llvm_version
       run: |
-        # 默认版本（可手动更新为最新已知稳定版）
         DEFAULT_VERSION="llvmorg-19.1.6"
-        # 如果是tag，尝试匹配LLVM官方tag
         if [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
           TAG_NAME="${{ github.ref_name }}"
-          # 检查LLVM官方仓库是否有此tag
           if git ls-remote --tags https://github.com/llvm/llvm-project.git | grep -q "refs/tags/$TAG_NAME$"; then
             echo "Using LLVM tag: $TAG_NAME"
             echo "LLVM_VERSION=$TAG_NAME" >> $GITHUB_OUTPUT
@@ -35,18 +37,26 @@ jobs:
             echo "LLVM_VERSION=$DEFAULT_VERSION" >> $GITHUB_OUTPUT
           fi
         else
-          # 非tag时，获取最新稳定版（排除rc/pre-release）
           LATEST_VERSION=$(git ls-remote --tags https://github.com/llvm/llvm-project.git | \
                            grep -o 'refs/tags/llvmorg-[0-9]\+\.[0-9]\+\.[0-9]\+$' | \
                            sort -V | tail -n 1 | sed 's|refs/tags/||')
-          echo "Using latest stable LLVM version: $LATEST_VERSION"
-          echo "LLVM_VERSION=$LATEST_VERSION" >> $GITHUB_OUTPUT
+          if [ -z "$LATEST_VERSION" ]; then
+            echo "No stable LLVM version found, using default: $DEFAULT_VERSION"
+            echo "LLVM_VERSION=$DEFAULT_VERSION" >> $GITHUB_OUTPUT
+          else
+            echo "Using latest stable LLVM version: $LATEST_VERSION"
+            echo "LLVM_VERSION=$LATEST_VERSION" >> $GITHUB_OUTPUT
+          fi
         fi
 
     - name: Download LLVM source
       run: |
         git clone --depth 1 --branch ${{ steps.llvm_version.outputs.LLVM_VERSION }} \
           https://github.com/llvm/llvm-project.git
+        if [ ! -d llvm-project ]; then
+          echo "Failed to clone LLVM repository"
+          exit 1
+        fi
         cd llvm-project
 
     - name: Configure LLVM build with CMake
@@ -62,6 +72,7 @@ jobs:
           -DLLVM_ENABLE_ASSERTIONS=OFF \
           -DLLVM_USE_LINKER=lld \
           -DLLVM_PARALLEL_LINK_JOBS=1 \
+          -DLLVM_PARALLEL_COMPILE_JOBS=4 \
           -DCMAKE_C_COMPILER=clang \
           -DCMAKE_CXX_COMPILER=clang++ \
           ../llvm
@@ -77,13 +88,13 @@ jobs:
         cd build
         ninja install
         cd ../install
-        tar -czf clang-toolchain.tar.gz bin/
+        tar -czf clang-toolchain-${{ steps.llvm_version.outputs.LLVM_VERSION }}.tar.gz bin/
 
     - name: Upload build artifacts (for testing)
       uses: actions/upload-artifact@v4
       with:
         name: clang-toolchain-${{ github.sha }}
-        path: llvm-project/install/clang-toolchain.tar.gz
+        path: llvm-project/install/clang-toolchain-${{ steps.llvm_version.outputs.LLVM_VERSION }}.tar.gz
         retention-days: 30
 
     - name: Delete existing release (if tag exists)
@@ -91,7 +102,6 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # 删除同名Release（支持覆盖）
         RELEASE_NAME="${{ github.ref_name }}"
         RELEASE_ID=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
           https://api.github.com/repos/${{ github.repository }}/releases | \
@@ -104,28 +114,15 @@ jobs:
 
     - name: Create Release (only on tags)
       if: startsWith(github.ref, 'refs/tags/')
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ github.ref_name }}
-        release_name: LLVM Clang Toolchain ${{ github.ref_name }}
+        name: LLVM Clang Toolchain ${{ github.ref_name }}
         body: |
           Custom-built LLVM/Clang version ${{ steps.llvm_version.outputs.LLVM_VERSION }}.
           - Supports aarch64 and riscv64.
           - Compatible with Linux kernel 6.6 (including KVM).
-          Download clang-toolchain.tar.gz for use.
+          Download clang-toolchain-${{ steps.llvm_version.outputs.LLVM_VERSION }}.tar.gz for use.
+        files: llvm-project/install/clang-toolchain-${{ steps.llvm_version.outputs.LLVM_VERSION }}.tar.gz
         draft: false
         prerelease: false
-
-    - name: Upload Release Asset
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: llvm-project/install/clang-toolchain.tar.gz
-        asset_name: clang-toolchain-${{ github.ref_name }}.tar.gz
-        asset_content_type: application/gzip
