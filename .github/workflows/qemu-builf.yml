@@ -1,0 +1,139 @@
+name: Build QEMU Toolchain
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ '*' ]  # 匹配任何tag，如v10.1.0
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y git curl jq build-essential zlib1g-dev libglib2.0-dev libpixman-1-dev
+        sudo apt-get install -y pkg-config libgio2.0-dev libspice-server-dev libusb-1.0-0-dev
+        sudo apt-get install -y libcap-ng-dev libattr1-dev libbrlapi-dev libepoxy-dev
+        sudo apt-get install -y libgtk-3-dev libvte-2.91-dev libjpeg-turbo8-dev libncurses5-dev
+        sudo apt-get install -y libaio-dev libfdt-dev liblzo2-dev librdmacm-dev libibverbs-dev
+        sudo apt-get install -y libnuma-dev libusbredirparser-dev libvirglrenderer-dev
+        sudo apt-get install -y libslirp-dev libbrlapi-dev libcapstone-dev liburing-dev
+        sudo apt-get install -y python3 python3-pip python3-venv ninja-build meson
+        pip3 install sphinx sphinx_rtd_theme
+
+    - name: Determine QEMU version
+      id: qemu_version
+      run: |
+        # 默认版本（可手动更新为最新已知稳定版）
+        DEFAULT_VERSION="v10.1.0"
+        # 如果是tag，尝试匹配QEMU官方tag
+        if [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
+          TAG_NAME="${{ github.ref_name }}"
+          # 检查QEMU官方仓库是否有此tag
+          if git ls-remote --tags https://github.com/qemu/qemu.git | grep -q "refs/tags/$TAG_NAME$"; then
+            echo "Using QEMU tag: $TAG_NAME"
+            echo "QEMU_VERSION=$TAG_NAME" >> $GITHUB_OUTPUT
+          else
+            echo "Tag $TAG_NAME not found in QEMU repo, falling back to default: $DEFAULT_VERSION"
+            echo "QEMU_VERSION=$DEFAULT_VERSION" >> $GITHUB_OUTPUT
+          fi
+        else
+          # 非tag时，获取最新稳定版（排除rc/pre-release）
+          LATEST_VERSION=$(git ls-remote --tags https://github.com/qemu/qemu.git | \
+                           grep -o 'refs/tags/v[0-9]\+\.[0-9]\+\.[0-9]\+$' | \
+                           sort -V | tail -n 1 | sed 's|refs/tags/||')
+          echo "Using latest stable QEMU version: $LATEST_VERSION"
+          echo "QEMU_VERSION=$LATEST_VERSION" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Download QEMU source
+      run: |
+        git clone --depth 1 --branch ${{ steps.qemu_version.outputs.QEMU_VERSION }} \
+          https://github.com/qemu/qemu.git
+        cd qemu
+
+    - name: Configure QEMU build
+      run: |
+        cd qemu
+        mkdir build
+        cd build
+        ../configure \
+          --enable-kvm \
+          --target-list="x86_64-softmmu,aarch64-softmmu,riscv64-softmmu" \
+          --prefix=$PWD/install \
+          --enable-slirp \
+          --enable-virtfs \
+          --enable-vhost-net \
+          --enable-spice \
+          --enable-usb-redir \
+          --enable-lzo \
+          --enable-guest-agent \
+          --enable-docs \
+          --enable-tools
+
+    - name: Build QEMU
+      run: |
+        cd qemu/build
+        make -j$(nproc)
+
+    - name: Install and package QEMU
+      run: |
+        cd qemu/build
+        make install
+        cd install
+        tar -czf qemu-toolchain.tar.gz bin/
+
+    - name: Upload build artifacts (for testing)
+      uses: actions/upload-artifact@v4
+      with:
+        name: qemu-toolchain-${{ github.sha }}
+        path: qemu/build/install/qemu-toolchain.tar.gz
+        retention-days: 30
+
+    - name: Delete existing release (if tag exists)
+      if: startsWith(github.ref, 'refs/tags/')
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # 删除同名Release（支持覆盖）
+        RELEASE_NAME="${{ github.ref_name }}"
+        RELEASE_ID=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+          https://api.github.com/repos/${{ github.repository }}/releases | \
+          jq -r ".[] | select(.tag_name == \"$RELEASE_NAME\") | .id")
+        if [ ! -z "$RELEASE_ID" ]; then
+          echo "Deleting existing release with ID: $RELEASE_ID"
+          curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" \
+            https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID
+        fi
+
+    - name: Create Release (only on tags)
+      if: startsWith(github.ref, 'refs/tags/')
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref_name }}
+        release_name: QEMU Toolchain ${{ github.ref_name }}
+        body: |
+          Custom-built QEMU version ${{ steps.qemu_version.outputs.QEMU_VERSION }}.
+          - Supports KVM.
+          - Supports aarch64 and riscv64 guest architectures.
+          Download qemu-toolchain.tar.gz for use.
+        draft: false
+        prerelease: false
+
+    - name: Upload Release Asset
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: qemu/build/install/qemu-toolchain.tar.gz
+        asset_name: qemu-toolchain-${{ github.ref_name }}.tar.gz
+        asset_content_type: application/gzip
