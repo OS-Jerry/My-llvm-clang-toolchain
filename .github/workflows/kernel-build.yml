@@ -2,9 +2,8 @@ name: Build Linux kernel (LLVM) and Publish Release
 
 on:
   push:
-    # push tag like v6.10 will trigger; pattern matches v<major>.<minor> and similar
     tags:
-      - 'v*.*'
+      - 'v*.*'   # e.g. v6.10
   workflow_dispatch:
     inputs:
       version:
@@ -13,204 +12,104 @@ on:
         default: 'v6.6'
 
 permissions:
-  contents: write # needed to create releases & upload assets
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    # build both architectures in parallel
     strategy:
       fail-fast: false
       matrix:
         arch: [aarch64, riscv64]
 
     env:
-      # URL to the prebuilt clang toolchain you provided
       CLANG_TARBALL: https://github.com/OS-Jerry/My-llvm-clang-toolchain/releases/download/llvmorg-21.1.0/clang-toolchain-llvmorg-21.1.0.tar.gz
-      KERNEL_REPO: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git
+      KERNEL_REPO: https://github.com/stable/linux-stable.git
 
     steps:
     - name: Prepare version variable
       id: set_version
       run: |
-        # If triggered by tag push, use the tag name; otherwise use workflow input
-        if [ "${{ github.event_name }}" = "push" ] && [[ "${{ github.ref }}" == refs/tags/* ]]; then
-          VERSION="${{ github.ref#refs/tags/ }}"
+        if [ "${{ github.event_name }}" = "push" ]; then
+          VERSION="${{ github.ref_name }}"
         else
           VERSION="${{ github.event.inputs.version || 'v6.6' }}"
         fi
         echo "VERSION=$VERSION" >> $GITHUB_ENV
         echo "Computed VERSION=$VERSION"
 
-    - name: Checkout (this repo)
+    - name: Checkout this repo
       uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
 
     - name: Install build dependencies
       run: |
         sudo apt-get update -y
         sudo apt-get install -y --no-install-recommends \
           build-essential libncurses-dev bison flex libssl-dev bc python3 git wget tar \
-          libelf-dev dwarves pkg-config ccache
-
-        # For riscv cross tools if needed (may be helpful)
-        sudo apt-get install -y --no-install-recommends gcc-riscv64-linux-gnu binutils-riscv64-linux-gnu || true
+          libelf-dev dwarves pkg-config ccache \
+          gcc-riscv64-linux-gnu binutils-riscv64-linux-gnu \
+          gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
     - name: Download & extract LLVM/Clang toolchain
       run: |
         mkdir -p $RUNNER_TEMP/clang-toolchain
         cd $RUNNER_TEMP/clang-toolchain
-        echo "Downloading clang toolchain..."
         wget -q $CLANG_TARBALL -O clang-toolchain.tar.gz
-        tar -xf clang-toolchain.tar.gz --strip-components=0
-        # Assume tarball places bin/ under the root; adjust if needed
-        echo "Extracted to: $(pwd)"
-        ls -la
-        echo "PATH_ADD=$RUNNER_TEMP/clang-toolchain/bin" >> $GITHUB_ENV
+        tar -xf clang-toolchain.tar.gz
+        echo "$RUNNER_TEMP/clang-toolchain/bin" >> $GITHUB_PATH
 
     - name: Show toolchain versions
       run: |
-        export PATH="$PATH:$RUNNER_TEMP/clang-toolchain/bin"
-        echo "clang:" $(clang --version | head -n1) || true
-        echo "lld:" $(ld.lld --version 2>/dev/null | head -n1) || true
-        echo "llvm-ar:" $(llvm-ar --version 2>/dev/null | head -n1) || true
+        clang --version
+        ld.lld --version || true
 
-    - name: Clone official Linux stable repository (specified version)
+    - name: Clone Linux kernel (${{ env.VERSION }})
       run: |
-        set -e
-        echo "Cloning kernel $VERSION ..."
-        mkdir -p kernel-src
+        git clone --depth 1 --branch $VERSION $KERNEL_REPO kernel-src
         cd kernel-src
-        # shallow clone the desired tag (if exists)
-        git clone --depth 1 --branch $VERSION $KERNEL_REPO .
-        if [ $? -ne 0 ]; then
-          echo "First clone failed; trying full clone fallback..."
-          rm -rf *
-          git clone $KERNEL_REPO .
-          git checkout $VERSION
-        fi
-        git rev-parse --abbrev-ref HEAD || true
-        echo "Cloned kernel commit: $(git rev-parse --verify HEAD)"
-        ls -la
+        git rev-parse HEAD
 
-    - name: Configure build variables
-      run: |
-        # export common envs for subsequent steps
-        echo "BUILD_ROOT=$GITHUB_WORKSPACE/kernel-build" >> $GITHUB_ENV
-        echo "KERNEL_SRC=$GITHUB_WORKSPACE/kernel-src" >> $GITHUB_ENV
-        echo "ARCH=${{ matrix.arch }}" >> $GITHUB_ENV
-
-    - name: Build kernel (per-arch)
-      working-directory: ${{ github.workspace }}/kernel-src
+    - name: Build kernel
+      working-directory: kernel-src
       env:
-        PATH: ${{ env.PATH }}:$RUNNER_TEMP/clang-toolchain/bin
         LLVM: "1"
       run: |
-        set -euo pipefail
-        ARCH="${ARCH}"
-        VERSION="${VERSION}"
-        BUILD_ROOT="${BUILD_ROOT}"
-        SRC="${PWD}"
-        mkdir -p "$BUILD_ROOT"
-        # separate output dir per-arch
-        OUTDIR="$BUILD_ROOT/out-${ARCH}-${VERSION}"
+        ARCH=${{ matrix.arch }}
+        VERSION=${{ env.VERSION }}
+        BUILD_ROOT=$GITHUB_WORKSPACE/build
+        OUTDIR=$BUILD_ROOT/out-$ARCH-$VERSION
         mkdir -p "$OUTDIR"
-        echo "Building kernel $VERSION ARCH=$ARCH -> OUTDIR=$OUTDIR"
-        cd "$SRC"
 
-        export PATH="$PATH:$RUNNER_TEMP/clang-toolchain/bin"
-
-        # Set common make variables
-        MAKE_ARGS="-j$(nproc) CC=clang LLVM=1 HOSTCC=clang HOSTLD=ld.lld LD=ld.lld"
+        MAKEFLAGS="-j$(nproc) CC=clang LLVM=1 HOSTCC=clang HOSTLD=ld.lld LD=ld.lld"
 
         if [ "$ARCH" = "aarch64" ]; then
-          export ARCH=arm64
-          # CROSS_COMPILE is useful for some tools (objcopy, strip) — adjust if you have cross binutils
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          # default config
+          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
           make O="$OUTDIR" defconfig
-          # build
-          make O="$OUTDIR" ARCH=arm64 $MAKE_ARGS
+          make O="$OUTDIR" $MAKEFLAGS
         elif [ "$ARCH" = "riscv64" ]; then
-          export ARCH=riscv
-          # CROSS_COMPILE for riscv64 (installing binutils-riscv64 helps)
-          export CROSS_COMPILE=riscv64-linux-gnu-
-          # some riscv toolchains expect RISCV tools; we try to rely on clang + cross binutils
-          # choose defconfig (riscv has 'defconfig')
+          export ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu-
           make O="$OUTDIR" defconfig
-          make O="$OUTDIR" ARCH=riscv $MAKE_ARGS
-        else
-          echo "Unknown arch: $ARCH"
-          exit 1
+          make O="$OUTDIR" $MAKEFLAGS
         fi
 
-        # Collect basic artifacts (kernel image, dtbs, System.map)
-        echo "Collecting artifacts..."
-        ART_DIR="$BUILD_ROOT/artifacts-${ARCH}-${VERSION}"
+        ART_DIR=$BUILD_ROOT/artifacts-$ARCH-$VERSION
         mkdir -p "$ART_DIR"
-        # copy the whole output dir (safe and simple)
         cp -a "$OUTDIR" "$ART_DIR/build-output"
-        # try to copy common kernel images if present
-        if [ -f "$OUTDIR/arch/$ARCH/boot/Image" ]; then
-          cp "$OUTDIR/arch/$ARCH/boot/Image" "$ART_DIR/" || true
-        fi
-        if [ -f "$OUTDIR/arch/$ARCH/boot/Image.gz" ]; then
-          cp "$OUTDIR/arch/$ARCH/boot/Image.gz" "$ART_DIR/" || true
-        fi
-        if [ -d "$OUTDIR/arch/$ARCH/boot/dts" ]; then
-          mkdir -p "$ART_DIR/dtb"
-          find "$OUTDIR/arch/$ARCH/boot/dts" -name '*.dtb' -exec cp {} "$ART_DIR/dtb/" \; || true
-        fi
-        if [ -f "$OUTDIR/System.map" ]; then
-          cp "$OUTDIR/System.map" "$ART_DIR/" || true
-        fi
-        if [ -f "$OUTDIR/.config" ]; then
-          cp "$OUTDIR/.config" "$ART_DIR/" || true
-        fi
+        cp "$OUTDIR/.config" "$ART_DIR/" || true
+        cp "$OUTDIR/System.map" "$ART_DIR/" || true
+        find "$OUTDIR/arch" -type f -name "Image*" -exec cp {} "$ART_DIR/" \; || true
+        find "$OUTDIR/arch" -type f -name "*.dtb" -exec cp {} "$ART_DIR/" \; || true
 
-        # Make a release tarball for this arch
-        TAR_NAME="linux-${VERSION}-${ARCH}.tar.gz"
-        tar -czf "$GITHUB_WORKSPACE/$TAR_NAME" -C "$ART_DIR" .
-        echo "Artifact: $GITHUB_WORKSPACE/$TAR_NAME"
+        TAR=linux-$VERSION-$ARCH.tar.gz
+        tar -czf $GITHUB_WORKSPACE/$TAR -C "$ART_DIR" .
 
-    - name: Create or update GitHub Release
-      id: create_release
-      uses: actions/create-release@v1
+    - name: Create or update Release
+      uses: softprops/action-gh-release@v2
       with:
         tag_name: ${{ env.VERSION }}
-        release_name: Linux-${{ env.VERSION }}
-        body: |
-          Automated kernel build for ${{ env.VERSION }}.
-          Generated by workflow ${{ github.workflow }}.
-        draft: false
-        prerelease: false
+        files: |
+          linux-${{ env.VERSION }}-aarch64.tar.gz
+          linux-${{ env.VERSION }}-riscv64.tar.gz
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Upload release assets
-      uses: actions/upload-release-asset@v1
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./linux-${{ env.VERSION }}-aarch64.tar.gz
-        asset_name: linux-${{ env.VERSION }}-aarch64.tar.gz
-        asset_content_type: application/gzip
-      continue-on-error: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: Upload release assets (riscv)
-      uses: actions/upload-release-asset@v1
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./linux-${{ env.VERSION }}-riscv64.tar.gz
-        asset_name: linux-${{ env.VERSION }}-riscv64.tar.gz
-        asset_content_type: application/gzip
-      continue-on-error: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-    - name: List uploaded assets (for debug)
-      run: |
-        echo "Release created: ${{ env.VERSION }}"
 
