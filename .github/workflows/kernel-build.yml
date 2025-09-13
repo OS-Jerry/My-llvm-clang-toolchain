@@ -2,7 +2,7 @@ name: Build Linux Kernel with Custom LLVM
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # Daily at UTC 00:00 (Beijing time ~08:00)
+    - cron: '0 0 * * *'  # Daily at UTC 00:00 (Beijing ~08:00)
   push:
     tags: [ '*' ]  # Trigger on any tag push for specific kernel versions
 
@@ -27,33 +27,41 @@ jobs:
       id: determine_versions
       run: |
         KERNEL_DEFAULT="v6.6"
-        LLVM_TAG=""  # Empty means use latest release
+        LLVM_TAG=""
         KERNEL_TAG="$KERNEL_DEFAULT"
         
         # Parse config.yaml if exists
         if [ -f config.yaml ]; then
-          python3 -c '
-          import yaml
-          import sys
-          with open("config.yaml", "r") as f:
-              config = yaml.safe_load(f)
-          llvm_tag = config.get("llvm_tag", "")
-          kernel_tag = config.get("kernel_tag", "")
-          print(f"LLVM_TAG={llvm_tag}")
-          print(f"KERNEL_TAG={kernel_tag}")
-          ' >> $GITHUB_OUTPUT
+          python3 -c "
+import yaml
+import sys
+try:
+    with open('config.yaml', 'r') as f:
+        config = yaml.safe_load(f) or {}
+    llvm_tag = config.get('llvm_tag', '')
+    kernel_tag = config.get('kernel_tag', '')
+    print(f'LLVM_TAG={llvm_tag}')
+    print(f'KERNEL_TAG={kernel_tag}')
+except Exception as e:
+    print(f'Error parsing config.yaml: {e}', file=sys.stderr)
+    print('LLVM_TAG=')
+    print('KERNEL_TAG=')
+          " >> $GITHUB_OUTPUT
+        else
+          echo "No config.yaml found, using defaults"
+          echo "LLVM_TAG=" >> $GITHUB_OUTPUT
+          echo "KERNEL_TAG=$KERNEL_DEFAULT" >> $GITHUB_OUTPUT
         fi
         
-        # Override kernel_tag if push tag matches vX.Y pattern (e.g., v6.10)
+        # Override kernel_tag if push tag matches vX.Y pattern
         if [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
           TAG_NAME="${{ github.ref_name }}"
           if [[ $TAG_NAME =~ ^v[0-9]+\.[0-9]+$ ]]; then
-            # Check if tag exists in official Linux repo
             if git ls-remote --tags https://github.com/torvalds/linux.git | grep -q "refs/tags/$TAG_NAME$"; then
               echo "Using kernel tag from push: $TAG_NAME"
               echo "KERNEL_TAG=$TAG_NAME" >> $GITHUB_OUTPUT
             else
-              echo "Tag $TAG_NAME not found in Linux repo, using default or config: $KERNEL_TAG"
+              echo "Tag $TAG_NAME not found in Linux repo, using config or default: ${{ steps.determine_versions.outputs.KERNEL_TAG }}"
             fi
           fi
         fi
@@ -63,9 +71,8 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        LLVM_TAG="${{ steps.determine_versions.outputs.LLVM_TAG }}"  # From config or empty
+        LLVM_TAG="${{ steps.determine_versions.outputs.LLVM_TAG }}"
         if [ -z "$LLVM_TAG" ]; then
-          # Use latest if no specific tag
           LLVM_TAG=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
             https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r '.tag_name')
           if [[ ! $LLVM_TAG == llvmorg-* ]]; then
@@ -76,7 +83,6 @@ jobs:
         echo "Using LLVM tag: $LLVM_TAG"
         echo "LLVM_TAG=$LLVM_TAG" >> $GITHUB_OUTPUT
         
-        # Download asset: clang-toolchain-<tag>.tar.gz
         ASSET_ID=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
           https://api.github.com/repos/${{ github.repository }}/releases/tags/$LLVM_TAG | \
           jq -r '.assets[] | select(.name == "clang-toolchain-'$LLVM_TAG'.tar.gz") | .id')
@@ -95,22 +101,38 @@ jobs:
     - name: Download Linux kernel source
       if: steps.get_llvm_release.outputs.LLVM_TAG != ''
       run: |
-        KERNEL_TAG="${{ steps.determine_versions.outputs.KERNEL_TAG }}"  # From tag/config/default
-        git clone --depth 1 --branch $KERNEL_TAG https://github.com/torvalds/linux.git
+        KERNEL_TAG="${{ steps.determine_versions.outputs.KERNEL_TAG }}"
+        git clone --depth 1 --branch "$KERNEL_TAG" https://github.com/torvalds/linux.git
+        if [ $? -ne 0 ]; then
+          echo "Failed to clone Linux kernel $KERNEL_TAG"
+          exit 1
+        fi
         cd linux
 
     - name: Setup LLVM toolchain
       if: steps.get_llvm_release.outputs.LLVM_TAG != ''
       run: |
         export PATH=$GITHUB_WORKSPACE/clang-toolchain-bin:$PATH
-        clang --version  # Verify
+        clang --version
+        if [ $? -ne 0 ]; then
+          echo "Failed to verify Clang toolchain"
+          exit 1
+        fi
 
     - name: Build kernel for aarch64
       if: steps.get_llvm_release.outputs.LLVM_TAG != ''
       run: |
         cd linux
         make ARCH=arm64 defconfig
+        if [ $? -ne 0 ]; then
+          echo "Failed to generate aarch64 defconfig"
+          exit 1
+        fi
         make ARCH=arm64 LLVM=1 -j$(nproc) vmlinux modules
+        if [ $? -ne 0 ]; then
+          echo "Failed to build aarch64 kernel"
+          exit 1
+        fi
         mkdir -p ../kernel-aarch64
         cp vmlinux ../kernel-aarch64/
         cp -r arch/arm64/boot/dts ../kernel-aarch64/  # Optional DTBs
@@ -124,7 +146,15 @@ jobs:
       run: |
         cd linux
         make ARCH=riscv defconfig
+        if [ $? -ne 0 ]; then
+          echo "Failed to generate riscv64 defconfig"
+          exit 1
+        fi
         make ARCH=riscv LLVM=1 -j$(nproc) vmlinux modules
+        if [ $? -ne 0 ]; then
+          echo "Failed to build riscv64 kernel"
+          exit 1
+        fi
         mkdir -p ../kernel-riscv64
         cp vmlinux ../kernel-riscv64/
         cp -r arch/riscv/boot/dts ../kernel-riscv64/  # Optional DTBs
@@ -141,7 +171,6 @@ jobs:
         LLVM_TAG="${{ steps.get_llvm_release.outputs.LLVM_TAG }}"
         KERNEL_TAG="${{ steps.determine_versions.outputs.KERNEL_TAG }}"
         RELEASE_TAG="kernel-$LLVM_TAG-$KERNEL_TAG-defconfig"
-        # Delete existing release if exists (for overwrite)
         RELEASE_ID=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
           https://api.github.com/repos/${{ github.repository }}/releases | \
           jq -r ".[] | select(.tag_name == \"$RELEASE_TAG\") | .id")
@@ -149,16 +178,13 @@ jobs:
           curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" \
             https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID
         fi
-        # Create new release
         RELEASE_RESPONSE=$(curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" \
           https://api.github.com/repos/${{ github.repository }}/releases \
           -d "{\"tag_name\": \"$RELEASE_TAG\", \"name\": \"Kernel build with $LLVM_TAG\", \"body\": \"Linux kernel $KERNEL_TAG built with LLVM $LLVM_TAG for aarch64 and riscv64 using defconfig.\"}")
         UPLOAD_URL=$(echo "$RELEASE_RESPONSE" | jq -r '.upload_url' | sed 's/{?name,label}//')
-        # Upload aarch64 asset
         curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Content-Type: application/gzip" \
           --data-binary "@kernel-$LLVM_TAG-$KERNEL_TAG-defconfig-aarch64.tar.gz" \
           "$UPLOAD_URL?name=kernel-$LLVM_TAG-$KERNEL_TAG-defconfig-aarch64.tar.gz"
-        # Upload riscv64 asset
         curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Content-Type: application/gzip" \
           --data-binary "@kernel-$LLVM_TAG-$KERNEL_TAG-defconfig-riscv64.tar.gz" \
           "$UPLOAD_URL?name=kernel-$LLVM_TAG-$KERNEL_TAG-defconfig-riscv64.tar.gz"
