@@ -32,7 +32,7 @@ jobs:
         
         # Parse config.yaml if exists
         if [ -f config.yaml ]; then
-          python3 -c "
+          python3 -c "$(cat <<EOF
 import yaml
 import sys
 try:
@@ -46,7 +46,8 @@ except Exception as e:
     print(f'Error parsing config.yaml: {e}', file=sys.stderr)
     print('LLVM_TAG=')
     print('KERNEL_TAG=')
-" >> $GITHUB_OUTPUT
+EOF
+)" >> $GITHUB_OUTPUT
         else
           echo "No config.yaml found, using defaults"
           echo "LLVM_TAG=" >> $GITHUB_OUTPUT
