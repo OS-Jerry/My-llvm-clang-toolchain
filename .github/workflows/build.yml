@@ -93,8 +93,24 @@ jobs:
           exit 1
         fi
 
+    - name: Install and package toolchain
+      run: |
+        cd llvm-project
+        cd build
+        ninja install
+        if [ $? -ne 0 ]; then
+          echo "Installation failed"
+          exit 1
+        fi
+        cd ../install
+        tar -czf clang-toolchain-${{ steps.llvm_version.outputs.LLVM_VERSION }}.tar.gz bin/
+
     - name: Test Clang Toolchain
       run: |
+        if [ ! -d llvm-project/install/bin ]; then
+          echo "Directory llvm-project/install/bin does not exist"
+          exit 1
+        fi
         cd llvm-project/install/bin
         ./clang --version
         if ./clang --version | grep -q "${{ steps.llvm_version.outputs.PURE_VERSION }}"; then
@@ -115,18 +131,6 @@ jobs:
           echo "RISCV64 target not supported"
           exit 1
         fi
-
-    - name: Install and package toolchain
-      run: |
-        cd llvm-project
-        cd build
-        ninja install
-        if [ $? -ne 0 ]; then
-          echo "Installation failed"
-          exit 1
-        fi
-        cd ../install
-        tar -czf clang-toolchain-${{ steps.llvm_version.outputs.LLVM_VERSION }}.tar.gz bin/
 
     - name: Upload build artifacts (for testing)
       uses: actions/upload-artifact@v4
