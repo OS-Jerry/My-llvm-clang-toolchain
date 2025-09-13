@@ -24,18 +24,19 @@ jobs:
 
     env:
       CLANG_TARBALL: https://github.com/OS-Jerry/My-llvm-clang-toolchain/releases/download/llvmorg-21.1.0/clang-toolchain-llvmorg-21.1.0.tar.gz
-      KERNEL_REPO: https://github.com/stable/linux-stable.git
+      KERNEL_REPO: https://github.com/torvalds/linux.git  # 更新为原始 Linux 仓库
 
     steps:
     - name: Prepare version variable
       id: set_version
       run: |
+        # 根据推送的事件或手动输入来设置版本
         if [ "${{ github.event_name }}" = "push" ]; then
-          VERSION="${{ github.ref_name }}"
+          VERSION="${{ github.ref_name }}"  # 推送事件获取版本
         else
-          VERSION="${{ github.event.inputs.version || 'v6.6' }}"
+          VERSION="${{ github.event.inputs.version || 'v6.6' }}"  # 默认 v6.6
         fi
-        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        echo "VERSION=$VERSION" >> $GITHUB_ENV  # 保存为环境变量
         echo "Computed VERSION=$VERSION"
 
     - name: Checkout this repo
@@ -67,7 +68,7 @@ jobs:
       run: |
         git clone --depth 1 --branch $VERSION $KERNEL_REPO kernel-src
         cd kernel-src
-        git rev-parse HEAD
+        git rev-parse HEAD  # 打印当前的 commit hash
 
     - name: Build kernel
       working-directory: kernel-src
