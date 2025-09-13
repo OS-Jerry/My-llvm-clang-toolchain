@@ -59,8 +59,8 @@ jobs:
       - name: Configure and build Kernel for ${{ matrix.arch }}
         working-directory: linux-kernel
         run: |
-          make defconfig
-          make -j$(nproc) bindeb-pkg
+          make ARCH=${{ matrix.arch }} CROSS_COMPILE=${{ matrix.cross_compile_prefix }} defconfig
+          make ARCH=${{ matrix.arch }} CROSS_COMPILE=${{ matrix.cross_compile_prefix }} -j$(nproc) bindeb-pkg
 
       - name: Upload Kernel packages to artifacts
         uses: actions/upload-artifact@v4
