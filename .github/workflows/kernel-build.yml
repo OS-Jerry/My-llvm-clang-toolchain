@@ -1,18 +1,9 @@
-name: Build Linux kernel (LLVM) and Publish Release
+name: Build Linux Kernel with LLVM Clang
 
 on:
   push:
     tags:
-      - 'v*.*'   # e.g. v6.10
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Linux version/tag to build (default: v6.6)'
-        required: false
-        default: 'v6.6'
-
-permissions:
-  contents: write
+      - 'v*'
 
 jobs:
   build:
@@ -20,97 +11,97 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [aarch64, riscv64]
-
-    env:
-      CLANG_TARBALL: https://github.com/OS-Jerry/My-llvm-clang-toolchain/releases/download/llvmorg-21.1.0/clang-toolchain-llvmorg-21.1.0.tar.gz
-      KERNEL_REPO: https://github.com/torvalds/linux.git  # 更新为原始 Linux 仓库
+        arch:
+          - aarch64
+          - riscv64
+        include:
+          - arch: aarch64
+            cross_compile_prefix: aarch64-linux-gnu-
+            llvm_cross_compile_prefix: llvm-aarch64-
+          - arch: riscv64
+            cross_compile_prefix: riscv64-linux-gnu-
+            llvm_cross_compile_prefix: llvm-riscv64-
 
     steps:
-    - name: Prepare version variable
-      id: set_version
-      run: |
-        # 根据推送的事件或手动输入来设置版本
-        if [ "${{ github.event_name }}" = "push" ]; then
-          VERSION="${{ github.ref_name }}"  # 推送事件获取版本
-        else
-          VERSION="${{ github.event.inputs.version || 'v6.6' }}"  # 默认 v6.6
-        fi
-        echo "VERSION=$VERSION" >> $GITHUB_ENV  # 保存为环境变量
-        echo "Computed VERSION=$VERSION"
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all history for tag access
 
-    - name: Checkout this repo
-      uses: actions/checkout@v4
+      - name: Get Linux Kernel version from tag
+        id: get_version
+        run: echo "KERNEL_VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
-    - name: Install build dependencies
-      run: |
-        sudo apt-get update -y
-        sudo apt-get install -y --no-install-recommends \
-          build-essential libncurses-dev bison flex libssl-dev bc python3 git wget tar \
-          libelf-dev dwarves pkg-config ccache \
-          gcc-riscv64-linux-gnu binutils-riscv64-linux-gnu \
-          gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+      - name: Download Linux Kernel source
+        run: |
+          git clone --depth 1 --branch v${{ steps.get_version.outputs.KERNEL_VERSION }} https://github.com/torvalds/linux.git linux-kernel
+          cd linux-kernel
+          git checkout v${{ steps.get_version.outputs.KERNEL_VERSION }}
 
-    - name: Download & extract LLVM/Clang toolchain
-      run: |
-        mkdir -p $RUNNER_TEMP/clang-toolchain
-        cd $RUNNER_TEMP/clang-toolchain
-        wget -q $CLANG_TARBALL -O clang-toolchain.tar.gz
-        tar -xf clang-toolchain.tar.gz
-        echo "$RUNNER_TEMP/clang-toolchain/bin" >> $GITHUB_PATH
+      - name: Download LLVM Clang toolchain
+        run: |
+          wget https://github.com/OS-Jerry/My-llvm-clang-toolchain/releases/download/llvmorg-21.1.0/clang-toolchain-llvmorg-21.1.0.tar.gz -O clang-toolchain.tar.gz
+          tar -xf clang-toolchain.tar.gz
+          echo "$(pwd)/clang-toolchain/bin" >> $GITHUB_PATH
 
-    - name: Show toolchain versions
-      run: |
-        clang --version
-        ld.lld --version || true
+      - name: Set up build environment
+        run: |
+          echo "ARCH=${{ matrix.arch }}" >> $GITHUB_ENV
+          echo "CROSS_COMPILE=${{ matrix.cross_compile_prefix }}" >> $GITHUB_ENV
+          echo "CC=${{ matrix.llvm_cross_compile_prefix }}clang" >> $GITHUB_ENV
+          echo "LD=${{ matrix.llvm_cross_compile_prefix }}ld.lld" >> $GITHUB_ENV
+          echo "AR=${{ matrix.llvm_cross_compile_prefix }}llvm-ar" >> $GITHUB_ENV
+          echo "NM=${{ matrix.llvm_cross_compile_prefix }}llvm-nm" >> $GITHUB_ENV
+          echo "OBJCOPY=${{ matrix.llvm_cross_compile_prefix }}llvm-objcopy" >> $GITHUB_ENV
+          echo "OBJDUMP=${{ matrix.llvm_cross_compile_prefix }}llvm-objdump" >> $GITHUB_ENV
+          echo "STRIP=${{ matrix.llvm_cross_compile_prefix }}llvm-strip" >> $GITHUB_ENV
 
-    - name: Clone Linux kernel (${{ env.VERSION }})
-      run: |
-        git clone --depth 1 --branch $VERSION $KERNEL_REPO kernel-src
-        cd kernel-src
-        git rev-parse HEAD  # 打印当前的 commit hash
+      - name: Configure and build Kernel for ${{ matrix.arch }}
+        working-directory: linux-kernel
+        run: |
+          make defconfig
+          make -j$(nproc) bindeb-pkg
 
-    - name: Build kernel
-      working-directory: kernel-src
-      env:
-        LLVM: "1"
-      run: |
-        ARCH=${{ matrix.arch }}
-        VERSION=${{ env.VERSION }}
-        BUILD_ROOT=$GITHUB_WORKSPACE/build
-        OUTDIR=$BUILD_ROOT/out-$ARCH-$VERSION
-        mkdir -p "$OUTDIR"
+      - name: Upload Kernel packages to artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages-${{ matrix.arch }}
+          path: linux-kernel/*.deb
 
-        MAKEFLAGS="-j$(nproc) CC=clang LLVM=1 HOSTCC=clang HOSTLD=ld.lld LD=ld.lld"
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-        if [ "$ARCH" = "aarch64" ]; then
-          export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
-          make O="$OUTDIR" defconfig
-          make O="$OUTDIR" $MAKEFLAGS
-        elif [ "$ARCH" = "riscv64" ]; then
-          export ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu-
-          make O="$OUTDIR" defconfig
-          make O="$OUTDIR" $MAKEFLAGS
-        fi
+      - name: Get Linux Kernel version from tag
+        id: get_version
+        run: echo "KERNEL_VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
-        ART_DIR=$BUILD_ROOT/artifacts-$ARCH-$VERSION
-        mkdir -p "$ART_DIR"
-        cp -a "$OUTDIR" "$ART_DIR/build-output"
-        cp "$OUTDIR/.config" "$ART_DIR/" || true
-        cp "$OUTDIR/System.map" "$ART_DIR/" || true
-        find "$OUTDIR/arch" -type f -name "Image*" -exec cp {} "$ART_DIR/" \; || true
-        find "$OUTDIR/arch" -type f -name "*.dtb" -exec cp {} "$ART_DIR/" \; || true
+      - name: Download all Kernel packages artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
 
-        TAR=linux-$VERSION-$ARCH.tar.gz
-        tar -czf $GITHUB_WORKSPACE/$TAR -C "$ART_DIR" .
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.get_version.outputs.KERNEL_VERSION }}
+          name: Linux Kernel v${{ steps.get_version.outputs.KERNEL_VERSION }} (LLVM Clang)
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Create or update Release
-      uses: softprops/action-gh-release@v2
-      with:
-        tag_name: ${{ env.VERSION }}
-        files: |
-          linux-${{ env.VERSION }}-aarch64.tar.gz
-          linux-${{ env.VERSION }}-riscv64.tar.gz
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload Release Assets
+        run: |
+          find artifacts -type f -name "*.deb" -print0 | xargs -0 -I {} gh release upload v${{ steps.get_version.outputs.KERNEL_VERSION }} {} --repo ${{ github.repository }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 
