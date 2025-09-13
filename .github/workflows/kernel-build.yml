@@ -32,21 +32,21 @@ jobs:
         
         # Parse config.yaml if exists
         if [ -f config.yaml ]; then
-          python3 -c "
-import yaml
-import sys
-try:
-    with open('config.yaml', 'r') as f:
-        config = yaml.safe_load(f) or {}
-    llvm_tag = config.get('llvm_tag', '')
-    kernel_tag = config.get('kernel_tag', '')
-    print(f'LLVM_TAG={llvm_tag}')
-    print(f'KERNEL_TAG={kernel_tag}')
-except Exception as e:
-    print(f'Error parsing config.yaml: {e}', file=sys.stderr)
-    print('LLVM_TAG=')
-    print('KERNEL_TAG=')
-          " >> $GITHUB_OUTPUT
+          python3 -c |
+            import yaml
+            import sys
+            try:
+                with open('config.yaml', 'r') as f:
+                    config = yaml.safe_load(f) or {}
+                llvm_tag = config.get('llvm_tag', '')
+                kernel_tag = config.get('kernel_tag', '')
+                print(f'LLVM_TAG={llvm_tag}')
+                print(f'KERNEL_TAG={kernel_tag}')
+            except Exception as e:
+                print(f'Error parsing config.yaml: {e}', file=sys.stderr)
+                print('LLVM_TAG=')
+                print('KERNEL_TAG=')
+          >> $GITHUB_OUTPUT
         else
           echo "No config.yaml found, using defaults"
           echo "LLVM_TAG=" >> $GITHUB_OUTPUT
