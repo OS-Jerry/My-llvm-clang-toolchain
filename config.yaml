@@ -1,0 +1,2 @@
+llvm_tag: llvmorg-21.1.0  # Specific LLVM release tag (optional)
+kernel_tag: v6.6  # Specific kernel tag (optional, defaults to v6.6)
