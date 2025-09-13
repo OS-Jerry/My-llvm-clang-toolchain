@@ -2,7 +2,12 @@ name: Build Linux Kernel with Custom LLVM
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # 每天UTC 00:00运行一次（约北京时间08:00）
+    - cron: '0 0 * * *'  # Daily at UTC 00:00 (Beijing time ~08:00)
+  push:
+    tags: [ '*' ]  # Trigger on any tag push for specific kernel versions
+
+permissions:
+  contents: write  # For release creation/deletion
 
 jobs:
   check-and-build-kernel:
@@ -15,83 +20,118 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y git curl jq build-essential bc bison flex libssl-dev libelf-dev
-        # 对于交叉编译kernel的依赖
         sudo apt-get install -y crossbuild-essential-arm64 crossbuild-essential-riscv64
-        # 但我们用Clang，所以sysroot从cross工具链获取
+        pip install pyyaml  # For parsing config.yaml
 
-    - name: Get latest LLVM release from this repo
+    - name: Determine versions from config.yaml and tag
+      id: determine_versions
+      run: |
+        KERNEL_DEFAULT="v6.6"
+        LLVM_TAG=""  # Empty means use latest release
+        KERNEL_TAG="$KERNEL_DEFAULT"
+        
+        # Parse config.yaml if exists
+        if [ -f config.yaml ]; then
+          python3 -c '
+          import yaml
+          import sys
+          with open("config.yaml", "r") as f:
+              config = yaml.safe_load(f)
+          llvm_tag = config.get("llvm_tag", "")
+          kernel_tag = config.get("kernel_tag", "")
+          print(f"LLVM_TAG={llvm_tag}")
+          print(f"KERNEL_TAG={kernel_tag}")
+          ' >> $GITHUB_OUTPUT
+        fi
+        
+        # Override kernel_tag if push tag matches vX.Y pattern (e.g., v6.10)
+        if [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
+          TAG_NAME="${{ github.ref_name }}"
+          if [[ $TAG_NAME =~ ^v[0-9]+\.[0-9]+$ ]]; then
+            # Check if tag exists in official Linux repo
+            if git ls-remote --tags https://github.com/torvalds/linux.git | grep -q "refs/tags/$TAG_NAME$"; then
+              echo "Using kernel tag from push: $TAG_NAME"
+              echo "KERNEL_TAG=$TAG_NAME" >> $GITHUB_OUTPUT
+            else
+              echo "Tag $TAG_NAME not found in Linux repo, using default or config: $KERNEL_TAG"
+            fi
+          fi
+        fi
+
+    - name: Get LLVM release from this repo
       id: get_llvm_release
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # 使用GitHub API获取最新Release（假设LLVM tags以llvmorg-开头）
-        LATEST_RELEASE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-          https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r '.tag_name')
-        if [[ $LATEST_RELEASE == llvmorg-* ]]; then
-          echo "Found latest LLVM release: $LATEST_RELEASE"
-          echo "LLVM_TAG=$LATEST_RELEASE" >> $GITHUB_OUTPUT
-          # 下载asset：clang-toolchain-<tag>.tar.gz
-          ASSET_ID=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            https://api.github.com/repos/${{ github.repository }}/releases/tags/$LATEST_RELEASE | \
-            jq -r '.assets[] | select(.name == "clang-toolchain-'$LATEST_RELEASE'.tar.gz") | .id')
-          if [ ! -z "$ASSET_ID" ]; then
-            curl -L -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/octet-stream" \
-              https://api.github.com/repos/${{ github.repository }}/releases/assets/$ASSET_ID \
-              -o clang-toolchain.tar.gz
-            tar -xzf clang-toolchain.tar.gz
-            mv bin clang-toolchain-bin  # 解压到clang-toolchain-bin/
-            echo "Downloaded and extracted LLVM toolchain from $LATEST_RELEASE"
-          else
-            echo "No matching asset found for $LATEST_RELEASE"
-            exit 0  # 无asset，跳过
+        LLVM_TAG="${{ steps.determine_versions.outputs.LLVM_TAG }}"  # From config or empty
+        if [ -z "$LLVM_TAG" ]; then
+          # Use latest if no specific tag
+          LLVM_TAG=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            https://api.github.com/repos/${{ github.repository }}/releases/latest | jq -r '.tag_name')
+          if [[ ! $LLVM_TAG == llvmorg-* ]]; then
+            echo "No valid LLVM release found"
+            exit 0
           fi
+        fi
+        echo "Using LLVM tag: $LLVM_TAG"
+        echo "LLVM_TAG=$LLVM_TAG" >> $GITHUB_OUTPUT
+        
+        # Download asset: clang-toolchain-<tag>.tar.gz
+        ASSET_ID=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+          https://api.github.com/repos/${{ github.repository }}/releases/tags/$LLVM_TAG | \
+          jq -r '.assets[] | select(.name == "clang-toolchain-'$LLVM_TAG'.tar.gz") | .id')
+        if [ ! -z "$ASSET_ID" ]; then
+          curl -L -H "Authorization: token $GITHUB_TOKEN" -H "Accept: application/octet-stream" \
+            https://api.github.com/repos/${{ github.repository }}/releases/assets/$ASSET_ID \
+            -o clang-toolchain.tar.gz
+          tar -xzf clang-toolchain.tar.gz
+          mv bin clang-toolchain-bin
+          echo "Downloaded LLVM toolchain from $LLVM_TAG"
         else
-          echo "No LLVM release found (tag not matching llvmorg-*)"
-          exit 0  # 无LLVM Release，跳过构建
+          echo "No matching asset for $LLVM_TAG"
+          exit 0
         fi
 
     - name: Download Linux kernel source
       if: steps.get_llvm_release.outputs.LLVM_TAG != ''
       run: |
-        git clone --depth 1 --branch v6.6 https://github.com/torvalds/linux.git
+        KERNEL_TAG="${{ steps.determine_versions.outputs.KERNEL_TAG }}"  # From tag/config/default
+        git clone --depth 1 --branch $KERNEL_TAG https://github.com/torvalds/linux.git
         cd linux
 
     - name: Setup LLVM toolchain
       if: steps.get_llvm_release.outputs.LLVM_TAG != ''
       run: |
         export PATH=$GITHUB_WORKSPACE/clang-toolchain-bin:$PATH
-        clang --version  # 验证
+        clang --version  # Verify
 
     - name: Build kernel for aarch64
       if: steps.get_llvm_release.outputs.LLVM_TAG != ''
       run: |
         cd linux
         make ARCH=arm64 defconfig
-        # 默认defconfig；后期可替换为自定义.config
-        # 启用KVM如果需要，但defconfig中通常已支持（视arch）
-        make ARCH=arm64 CROSS_COMPILE= CC=clang LD=ld.lld \
-          -j$(nproc) --target=aarch64-unknown-linux-gnu vmlinux modules
-        # 打包：vmlinux, modules等
+        make ARCH=arm64 LLVM=1 -j$(nproc) vmlinux modules
         mkdir -p ../kernel-aarch64
         cp vmlinux ../kernel-aarch64/
-        cp -r arch/arm64/boot/dts ../kernel-aarch64/  # 可选dtb
+        cp -r arch/arm64/boot/dts ../kernel-aarch64/  # Optional DTBs
         find . -name '*.ko' -exec cp {} ../kernel-aarch64/ \;
         cd ..
-        tar -czf kernel-${{ steps.get_llvm_release.outputs.LLVM_TAG }}-v6.6-defconfig-aarch64.tar.gz kernel-aarch64/
+        KERNEL_TAG="${{ steps.determine_versions.outputs.KERNEL_TAG }}"
+        tar -czf kernel-${{ steps.get_llvm_release.outputs.LLVM_TAG }}-$KERNEL_TAG-defconfig-aarch64.tar.gz kernel-aarch64/
 
     - name: Build kernel for riscv64
       if: steps.get_llvm_release.outputs.LLVM_TAG != ''
       run: |
         cd linux
         make ARCH=riscv defconfig
-        make ARCH=riscv CROSS_COMPILE= CC=clang LD=ld.lld \
-          -j$(nproc) --target=riscv64-unknown-linux-gnu vmlinux modules
+        make ARCH=riscv LLVM=1 -j$(nproc) vmlinux modules
         mkdir -p ../kernel-riscv64
         cp vmlinux ../kernel-riscv64/
-        cp -r arch/riscv/boot/dts ../kernel-riscv64/  # 可选dtb
+        cp -r arch/riscv/boot/dts ../kernel-riscv64/  # Optional DTBs
         find . -name '*.ko' -exec cp {} ../kernel-riscv64/ \;
         cd ..
-        tar -czf kernel-${{ steps.get_llvm_release.outputs.LLVM_TAG }}-v6.6-defconfig-riscv64.tar.gz kernel-riscv64/
+        KERNEL_TAG="${{ steps.determine_versions.outputs.KERNEL_TAG }}"
+        tar -czf kernel-${{ steps.get_llvm_release.outputs.LLVM_TAG }}-$KERNEL_TAG-defconfig-riscv64.tar.gz kernel-riscv64/
 
     - name: Create or update Release for kernel
       if: steps.get_llvm_release.outputs.LLVM_TAG != ''
@@ -99,8 +139,9 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         LLVM_TAG="${{ steps.get_llvm_release.outputs.LLVM_TAG }}"
-        RELEASE_TAG="kernel-$LLVM_TAG-v6.6-defconfig"
-        # 检查并删除现有同名Release（支持覆盖）
+        KERNEL_TAG="${{ steps.determine_versions.outputs.KERNEL_TAG }}"
+        RELEASE_TAG="kernel-$LLVM_TAG-$KERNEL_TAG-defconfig"
+        # Delete existing release if exists (for overwrite)
         RELEASE_ID=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
           https://api.github.com/repos/${{ github.repository }}/releases | \
           jq -r ".[] | select(.tag_name == \"$RELEASE_TAG\") | .id")
@@ -108,16 +149,16 @@ jobs:
           curl -s -X DELETE -H "Authorization: token $GITHUB_TOKEN" \
             https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID
         fi
-        # 创建新Release
+        # Create new release
         RELEASE_RESPONSE=$(curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" \
           https://api.github.com/repos/${{ github.repository }}/releases \
-          -d "{\"tag_name\": \"$RELEASE_TAG\", \"name\": \"Kernel build with $LLVM_TAG\", \"body\": \"Linux kernel v6.6 built with LLVM $LLVM_TAG for aarch64 and riscv64 using defconfig.\"}")
+          -d "{\"tag_name\": \"$RELEASE_TAG\", \"name\": \"Kernel build with $LLVM_TAG\", \"body\": \"Linux kernel $KERNEL_TAG built with LLVM $LLVM_TAG for aarch64 and riscv64 using defconfig.\"}")
         UPLOAD_URL=$(echo "$RELEASE_RESPONSE" | jq -r '.upload_url' | sed 's/{?name,label}//')
-        # 上传aarch64 asset
+        # Upload aarch64 asset
         curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Content-Type: application/gzip" \
-          --data-binary "@kernel-$LLVM_TAG-v6.6-defconfig-aarch64.tar.gz" \
-          "$UPLOAD_URL?name=kernel-$LLVM_TAG-v6.6-defconfig-aarch64.tar.gz"
-        # 上传riscv64 asset
+          --data-binary "@kernel-$LLVM_TAG-$KERNEL_TAG-defconfig-aarch64.tar.gz" \
+          "$UPLOAD_URL?name=kernel-$LLVM_TAG-$KERNEL_TAG-defconfig-aarch64.tar.gz"
+        # Upload riscv64 asset
         curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" -H "Content-Type: application/gzip" \
-          --data-binary "@kernel-$LLVM_TAG-v6.6-defconfig-riscv64.tar.gz" \
-          "$UPLOAD_URL?name=kernel-$LLVM_TAG-v6.6-defconfig-riscv64.tar.gz"
+          --data-binary "@kernel-$LLVM_TAG-$KERNEL_TAG-defconfig-riscv64.tar.gz" \
+          "$UPLOAD_URL?name=kernel-$LLVM_TAG-$KERNEL_TAG-defconfig-riscv64.tar.gz"
