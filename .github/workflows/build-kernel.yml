@@ -27,7 +27,7 @@ jobs:
 
     steps:
       - name: Checkout Linux Kernel repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           repository: torvalds/linux
           ref: ${{ github.event.inputs.version || 'v6.6' }}
@@ -81,7 +81,7 @@ jobs:
           tar -czf artifacts/linux-${{ matrix.arch }}-${{ github.event.inputs.version || 'v6.6' }}.tar.gz -C artifacts .
 
       - name: Upload Build Artifacts
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: linux-kernel-${{ matrix.arch }}-${{ github.event.inputs.version || 'v6.6' }}
           path: artifacts/linux-${{ matrix.arch }}-${{ github.event.inputs.version || 'v6.6' }}.tar.gz
