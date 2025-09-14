@@ -88,3 +88,4 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.version || 'v6.6' }}
           files: release_artifacts/**/*
+
