@@ -23,12 +23,7 @@ jobs:
         arch:
           - arm64
           - riscv
-        llvm_version: llvmorg-21.1.0
-        include:
-          - arch: arm64
-            llvm_version: llvmorg-21.1.0
-          - arch: riscv
-            llvm_version: llvmorg-21.1.0
+      fail-fast: false
 
     steps:
       - name: Checkout Linux Kernel repository
