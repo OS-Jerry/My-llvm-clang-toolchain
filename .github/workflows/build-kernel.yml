@@ -1,0 +1,86 @@
+name: Build Linux Kernel with LLVM Clang
+
+on:
+  push:
+    tags:
+      - 'v*.*'   # Trigger on version tags, e.g., v6.6
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Linux kernel version/tag to build (default: v6.6)'
+        required: false
+        default: 'v6.6'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        arch:
+          - arm64
+          - riscv
+        llvm_version: llvmorg-21.1.0
+        include:
+          - arch: arm64
+            llvm_version: llvmorg-21.1.0
+          - arch: riscv
+            llvm_version: llvmorg-21.1.0
+
+    steps:
+      - name: Checkout Linux Kernel repository
+        uses: actions/checkout@v2
+        with:
+          repository: torvalds/linux
+          ref: v${{ github.event.inputs.version || 'v6.6' }}
+
+      - name: Setup Clang Toolchain
+        run: |
+          mkdir -p /opt/llvm
+          curl -L https://github.com/OS-Jerry/My-llvm-clang-toolchain/releases/download/llvmorg-21.1.0/clang-toolchain-llvmorg-21.1.0.tar.gz | tar -xz -C /opt/llvm
+          export PATH=/opt/llvm/clang-toolchain-llvmorg-21.1.0/bin:$PATH
+
+      - name: Install required dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libncurses-dev \
+            bison \
+            flex \
+            libssl-dev \
+            bc \
+            wget
+
+      - name: Set up cross-compilation for ARM64 and RISC-V
+        run: |
+          if [ "${{ matrix.arch }}" == "arm64" ]; then
+            export CROSS_COMPILE=aarch64-linux-gnu-
+          elif [ "${{ matrix.arch }}" == "riscv" ]; then
+            export CROSS_COMPILE=riscv64-linux-gnu-
+          fi
+
+      - name: Configure Linux kernel for ${{ matrix.arch }}
+        run: |
+          make ARCH=${{ matrix.arch }} defconfig
+
+      - name: Build Linux kernel for ${{ matrix.arch }}
+        run: |
+          make ARCH=${{ matrix.arch }} -j$(nproc) all
+
+      - name: Archive kernel build output
+        if: success()
+        run: |
+          mkdir -p artifacts
+          cp arch/${{ matrix.arch }}/boot/Image artifacts/
+          tar -czf artifacts/linux-${{ matrix.arch }}-v${{ github.event.inputs.version || 'v6.6' }}.tar.gz -C artifacts .
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: linux-kernel-${{ matrix.arch }}-v${{ github.event.inputs.version || 'v6.6' }}
+          path: artifacts/linux-${{ matrix.arch }}-v${{ github.event.inputs.version || 'v6.6' }}.tar.gz
+
