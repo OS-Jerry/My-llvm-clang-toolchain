@@ -32,10 +32,12 @@ jobs:
           wget https://github.com/OS-Jerry/My-llvm-clang-toolchain/releases/download/llvmorg-21.1.0/clang-toolchain-llvmorg-21.1.0.tar.gz
           mkdir -p llvm-toolchain
           tar -xzf clang-toolchain-llvmorg-21.1.0.tar.gz -C llvm-toolchain --strip-components=1
-          echo "$GITHUB_WORKSPACE/llvm-toolchain/bin:$PATH" >> $GITHUB_PATH
+          echo "PATH=$GITHUB_WORKSPACE/llvm-toolchain/bin:$PATH" >> $GITHUB_ENV
+
 
       - name: Verify LLVM tools
         run: |
+          echo $PATH
           which clang
           which ld.lld
           clang --version
