@@ -3,7 +3,7 @@ name: Build Linux Kernel with LLVM Clang
 on:
   push:
     tags:
-      - 'v*.*'   # Trigger on version tags, e.g., v6.6
+      - 'v*.*'   # e.g. v6.6
   workflow_dispatch:
     inputs:
       version:
