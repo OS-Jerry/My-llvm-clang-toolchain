@@ -48,15 +48,25 @@ jobs:
             flex \
             libssl-dev \
             bc \
-            wget
+            wget \
+            gcc-aarch64-linux-gnu \
+            gcc-riscv64-linux-gnu
 
       - name: Configure Linux kernel for ${{ matrix.arch }}
         run: |
-          make ARCH=${{ matrix.arch }} LLVM=1 defconfig
+          if [ "${{ matrix.arch }}" == "arm64" ]; then
+            make ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          elif [ "${{ matrix.arch }}" == "riscv" ]; then
+            make ARCH=riscv LLVM=1 LLVM_IAS=1 CROSS_COMPILE=riscv64-linux-gnu- defconfig
+          fi
 
       - name: Build Linux kernel for ${{ matrix.arch }}
         run: |
-          make ARCH=${{ matrix.arch }} LLVM=1 -j$(nproc) all
+          if [ "${{ matrix.arch }}" == "arm64" ]; then
+            make ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) all
+          elif [ "${{ matrix.arch }}" == "riscv" ]; then
+            make ARCH=riscv LLVM=1 LLVM_IAS=1 CROSS_COMPILE=riscv64-linux-gnu- -j$(nproc) all
+          fi
 
       - name: Archive kernel build output
         run: |
