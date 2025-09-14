@@ -1,4 +1,4 @@
-name: Build Linux Kernel with LLVM Clang
+name: Build Linux Kernel with LLVM
 
 on:
   push:
@@ -17,7 +17,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     strategy:
       matrix:
         arch:
@@ -49,28 +48,17 @@ jobs:
             flex \
             libssl-dev \
             bc \
-            wget \
-            gcc-aarch64-linux-gnu \
-            gcc-riscv64-linux-gnu
+            wget
 
       - name: Configure Linux kernel for ${{ matrix.arch }}
         run: |
-          if [ "${{ matrix.arch }}" == "arm64" ]; then
-            make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
-          elif [ "${{ matrix.arch }}" == "riscv" ]; then
-            make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- defconfig
-          fi
+          make ARCH=${{ matrix.arch }} LLVM=1 defconfig
 
       - name: Build Linux kernel for ${{ matrix.arch }}
         run: |
-          if [ "${{ matrix.arch }}" == "arm64" ]; then
-            make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) all
-          elif [ "${{ matrix.arch }}" == "riscv" ]; then
-            make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- -j$(nproc) all
-          fi
+          make ARCH=${{ matrix.arch }} LLVM=1 -j$(nproc) all
 
       - name: Archive kernel build output
-        if: success()
         run: |
           mkdir -p artifacts
           if [ "${{ matrix.arch }}" == "arm64" ]; then
@@ -83,5 +71,20 @@ jobs:
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-kernel-${{ matrix.arch }}-${{ github.event.inputs.version || 'v6.6' }}
+          name: linux-${{ matrix.arch }}-${{ github.event.inputs.version || 'v6.6' }}
           path: artifacts/linux-${{ matrix.arch }}-${{ github.event.inputs.version || 'v6.6' }}.tar.gz
+
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release_artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.version || 'v6.6' }}
+          files: release_artifacts/**/*
