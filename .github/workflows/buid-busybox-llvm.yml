@@ -42,7 +42,7 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Install RISC-V toolchain
+    - name: Install build dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
@@ -55,30 +55,31 @@ jobs:
           flex \
           bison \
           libncurses-dev \
-          bc
+          bc \
+          libc6-dev-riscv64-cross \
+          linux-libc-dev-riscv64-cross
 
-
-    - name: Setup RISC-V GNU Toolchain
+    - name: Setup RISC-V Clang Toolchain
       run: |
-        if [ "${{ matrix.arch }}" = "32" ]; then
-          TOOLCHAIN_URL="https://github.com/riscv-collab/riscv-gnu-toolchain/releases/download/2024.02.02/riscv32-glibc-ubuntu-22.04-gcc-nightly-2024.02.02-nightly.tar.gz"
-        else
-          TOOLCHAIN_URL="https://github.com/riscv-collab/riscv-gnu-toolchain/releases/download/2024.02.02/riscv64-glibc-ubuntu-22.04-gcc-nightly-2024.02.02-nightly.tar.gz"
-        fi
-
-        echo "Downloading toolchain from: $TOOLCHAIN_URL"
-        wget -q "$TOOLCHAIN_URL" -O toolchain.tar.gz
-
-        # 解压到 /opt/riscv32 或 /opt/riscv64
-        sudo mkdir -p /opt/riscv${{ matrix.arch }}
-        sudo tar -xzf toolchain.tar.gz -C /opt/riscv${{ matrix.arch }} --strip-components=1
-
-        # 添加到 PATH
-        echo "/opt/riscv${{ matrix.arch }}/bin" >> $GITHUB_PATH
-
-        # 验证
-        /opt/riscv${{ matrix.arch }}/bin/riscv${{ matrix.arch }}-unknown-linux-gnu-gcc --version
-
+        # Download your custom LLVM/Clang toolchain
+        TOOLCHAIN_URL="https://github.com/OS-Jerry/My-llvm-clang-toolchain/releases/download/llvmorg-21.1.0/clang-toolchain-llvmorg-21.1.0.tar.gz"
+        
+        echo "Downloading Clang toolchain from: $TOOLCHAIN_URL"
+        wget -q "$TOOLCHAIN_URL" -O clang-toolchain.tar.gz
+        
+        # Create toolchain directory
+        sudo mkdir -p /opt/clang-riscv
+        sudo tar -xf clang-toolchain.tar.gz -C /opt/clang-riscv --strip-components=0
+        
+        # Add to PATH
+        echo "/opt/clang-riscv/bin" >> $GITHUB_PATH
+        
+        # Verify installation
+        /opt/clang-riscv/bin/clang --version
+        /opt/clang-riscv/bin/clang --print-targets | grep riscv
+        
+        echo "=== Clang RISC-V Target Support ==="
+        /opt/clang-riscv/bin/clang --print-targets | grep -E "(riscv32|riscv64)"
 
     - name: Determine Busybox version
       id: version
@@ -129,27 +130,70 @@ jobs:
         # Clean any previous build
         make clean || true
         
-        # Configure with default config
-        CROSS_COMPILE=riscv${{ matrix.arch }}-unknown-linux-gnu- make defconfig
+        # Set up Clang cross-compilation environment
+        export CC="/opt/clang-riscv/bin/clang"
+        export CXX="/opt/clang-riscv/bin/clang++"
+        export AR="/opt/clang-riscv/bin/llvm-ar"
+        export NM="/opt/clang-riscv/bin/llvm-nm"
+        export STRIP="/opt/clang-riscv/bin/llvm-strip"
+        export OBJCOPY="/opt/clang-riscv/bin/llvm-objcopy"
+        export OBJDUMP="/opt/clang-riscv/bin/llvm-objdump"
+        export RANLIB="/opt/clang-riscv/bin/llvm-ranlib"
+        
+        # Set target triple for RISC-V
+        if [ "${{ matrix.arch }}" = "32" ]; then
+          export TARGET_TRIPLE="riscv32-unknown-linux-gnu"
+        else
+          export TARGET_TRIPLE="riscv64-unknown-linux-gnu"
+        fi
+        
+        # Configure with Clang
+        make ARCH=riscv \
+             CROSS_COMPILE="/opt/clang-riscv/bin/llvm-" \
+             CC="$CC --target=$TARGET_TRIPLE" \
+             defconfig
         
         # Show configuration
         echo "=== Busybox Configuration ==="
-        CROSS_COMPILE=riscv${{ matrix.arch }}-unknown-linux-gnu- make kernelversion
+        make ARCH=riscv \
+             CROSS_COMPILE="/opt/clang-riscv/bin/llvm-" \
+             CC="$CC --target=$TARGET_TRIPLE" \
+             kernelversion
 
     - name: Build Busybox
       run: |
         cd busybox
         
-        # Build Busybox
-        CROSS_COMPILE=riscv${{ matrix.arch }}-unknown-linux-gnu- make -j$(nproc)
+        # Set up Clang cross-compilation environment
+        export CC="/opt/clang-riscv/bin/clang"
+        export CXX="/opt/clang-riscv/bin/clang++"
+        export AR="/opt/clang-riscv/bin/llvm-ar"
+        export NM="/opt/clang-riscv/bin/llvm-nm"
+        export STRIP="/opt/clang-riscv/bin/llvm-strip"
+        export OBJCOPY="/opt/clang-riscv/bin/llvm-objcopy"
+        export OBJDUMP="/opt/clang-riscv/bin/llvm-objdump"
+        export RANLIB="/opt/clang-riscv/bin/llvm-ranlib"
+        
+        # Set target triple for RISC-V
+        if [ "${{ matrix.arch }}" = "32" ]; then
+          export TARGET_TRIPLE="riscv32-unknown-linux-gnu"
+        else
+          export TARGET_TRIPLE="riscv64-unknown-linux-gnu"
+        fi
+        
+        # Build Busybox with Clang
+        make ARCH=riscv \
+             CROSS_COMPILE="/opt/clang-riscv/bin/llvm-" \
+             CC="$CC --target=$TARGET_TRIPLE" \
+             -j$(nproc)
         
         # Verify the binary
         echo "=== Build Results ==="
         ls -la busybox
         file busybox
         
-        # Check if it's the right architecture
-        /opt/riscv${{ matrix.arch }}/bin/riscv${{ matrix.arch }}-unknown-linux-gnu-objdump -f busybox | head -10
+        # Check if it's the right architecture using LLVM tools
+        /opt/clang-riscv/bin/llvm-objdump -f busybox | head -10
 
     - name: Create installation package
       run: |
@@ -172,7 +216,9 @@ jobs:
         Busybox ${{ steps.version.outputs.busybox_version }} for RISC-V ${{ matrix.arch }}-bit
         
         Built on: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
-        Target: riscv${{ matrix.arch }}-unknown-linux-gnu
+        Target: riscv${{ matrix.arch }}-unknown-linux-gnu  
+        Toolchain: LLVM/Clang 21.1.0 (Custom Build)
+        Compiler: clang --target=riscv${{ matrix.arch }}-unknown-linux-gnu
         
         Usage:
         1. Copy busybox to your target system
@@ -304,7 +350,7 @@ jobs:
           Run `./busybox --list` to see all available commands (typically 300+ utilities).
           
           Built on: $(date -u '+%Y-%m-%d %H:%M:%S UTC')  
-          Toolchain: riscv-gnu-toolchain 2024.02.02
+          Toolchain: LLVM/Clang 21.1.0 (Custom Build)
         files: ./release-assets/*
         draft: false
         prerelease: false
