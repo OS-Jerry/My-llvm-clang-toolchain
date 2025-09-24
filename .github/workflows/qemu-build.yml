@@ -121,28 +121,32 @@ jobs:
         git clone --depth 1 --branch ${{ steps.version.outputs.qemu_version }} \
           https://github.com/qemu/qemu.git
 
-    - name: Check QEMU build options
+    - name: Check QEMU build system
       run: |
         cd qemu
-        echo "=== Available QEMU Meson options ==="
-        meson configure 2>/dev/null | grep -E "(targets|kvm|gtk|spice|virtiofs)" || true
-        echo "=== Checking meson_options.txt ==="
-        head -50 meson_options.txt | grep -E "(targets|kvm|gtk|spice|virtiofs)" || true
+        echo "=== Checking QEMU build system ==="
+        ls -la configure || echo "No configure script found"
+        ls -la meson.build || echo "No meson.build found"
+        echo "=== Checking configure help ==="
+        ./configure --help | head -20 || echo "Configure help failed"
 
     - name: Configure QEMU build
       run: |
         cd qemu
         rm -rf build
         
-        # Configure with basic options that should exist
-        meson setup build \
-          --buildtype=release \
-          --prefix=/usr/local
+        # QEMU uses autotools configure + meson hybrid system
+        ./configure \
+          --prefix=/usr/local \
+          --enable-kvm \
+          --enable-gtk \
+          --enable-spice \
+          --target-list=x86_64-softmmu,aarch64-softmmu,riscv64-softmmu,x86_64-linux-user,aarch64-linux-user,riscv64-linux-user
 
     - name: Build QEMU
       run: |
-        cd qemu/build
-        ninja -j$(nproc)
+        cd qemu
+        make -j$(nproc)
 
     - name: Create installation directory
       run: |
@@ -150,8 +154,8 @@ jobs:
 
     - name: Install QEMU to temporary directory
       run: |
-        cd qemu/build
-        DESTDIR=/tmp/qemu-install meson install
+        cd qemu
+        make DESTDIR=/tmp/qemu-install install
 
     - name: Create .tar.gz package
       run: |
@@ -160,7 +164,7 @@ jobs:
 
     - name: Create .deb package
       run: |
-        cd qemu/build
+        cd qemu
         sudo checkinstall \
           --pkgname=qemu-custom \
           --pkgversion="${{ steps.version.outputs.qemu_version }}" \
@@ -174,7 +178,7 @@ jobs:
           --delspec=yes \
           --default \
           --install=no \
-          meson install
+          make install
         
         # Move deb package to temp directory
         sudo mv *.deb /tmp/${{ steps.version.outputs.release_name }}.deb
