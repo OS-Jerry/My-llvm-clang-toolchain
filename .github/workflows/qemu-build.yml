@@ -78,12 +78,12 @@ jobs:
     - name: Build QEMU
       run: |
         cd qemu/build
-        make -j$(nproc)
+        ninja -j$(nproc)
 
     - name: Install and package QEMU as .deb
       run: |
         cd qemu/build
-        sudo make install
+        sudo meson install
         cd install
         sudo checkinstall --pkgname=qemu --pkgversion=${{ steps.qemu_version.outputs.QEMU_VERSION }} --backup=no --deldoc=yes --default
         sudo mv *.deb /tmp/qemu-deb/
