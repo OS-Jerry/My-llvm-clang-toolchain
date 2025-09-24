@@ -22,7 +22,7 @@ jobs:
         sudo apt-get install -y libaio-dev libfdt-dev liblzo2-dev librdmacm-dev libibverbs-dev
         sudo apt-get install -y libnuma-dev libusbredirparser-dev libvirglrenderer-dev
         sudo apt-get install -y libslirp-dev libbrlapi-dev libcapstone-dev liburing-dev
-        sudo apt-get install -y python3 python3-pip python3-venv ninja-build meson
+        sudo apt-get install -y python3 python3-pip python3-venv ninja-build meson checkinstall
         pip3 install sphinx sphinx_rtd_theme
 
     - name: Determine QEMU version
@@ -80,19 +80,32 @@ jobs:
         cd qemu/build
         make -j$(nproc)
 
-    - name: Install and package QEMU
+    - name: Install and package QEMU as .deb
       run: |
         cd qemu/build
-        make install
+        sudo make install
         cd install
-        tar -czf qemu-toolchain.tar.gz bin/
+        sudo checkinstall --pkgname=qemu --pkgversion=${{ steps.qemu_version.outputs.QEMU_VERSION }} --backup=no --deldoc=yes --default
+        mv *.deb /tmp/qemu-deb/
 
-    - name: Upload build artifacts (for testing)
+    - name: Upload .deb package
       uses: actions/upload-artifact@v4
       with:
-        name: qemu-toolchain-${{ github.sha }}
-        path: qemu/build/install/qemu-toolchain.tar.gz
-        retention-days: 30
+        name: qemu-${{ github.ref_name }}.deb
+        path: /tmp/qemu-deb/*.deb
+
+    - name: Install and package QEMU as .tar.gz
+      run: |
+        cd qemu/build
+        sudo make install
+        cd install
+        tar -czf qemu-toolchain-${{ github.ref_name }}.tar.gz bin/
+
+    - name: Upload .tar.gz package
+      uses: actions/upload-artifact@v4
+      with:
+        name: qemu-${{ github.ref_name }}.tar.gz
+        path: qemu/build/install/qemu-toolchain-${{ github.ref_name }}.tar.gz
 
     - name: Delete existing release (if tag exists)
       if: startsWith(github.ref, 'refs/tags/')
@@ -123,7 +136,7 @@ jobs:
           Custom-built QEMU version ${{ steps.qemu_version.outputs.QEMU_VERSION }}.
           - Supports KVM.
           - Supports aarch64 and riscv64 guest architectures.
-          Download qemu-toolchain.tar.gz for use.
+          Download the .deb package for easy installation or the .tar.gz package for manual installation.
         draft: false
         prerelease: false
 
@@ -134,6 +147,18 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: qemu/build/install/qemu-toolchain.tar.gz
+        asset_path: /tmp/qemu-deb/*.deb
+        asset_name: qemu-${{ github.ref_name }}.deb
+        asset_content_type: application/deb
+
+    - name: Upload .tar.gz Release Asset
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: qemu/build/install/qemu-toolchain-${{ github.ref_name }}.tar.gz
         asset_name: qemu-toolchain-${{ github.ref_name }}.tar.gz
         asset_content_type: application/gzip
+
