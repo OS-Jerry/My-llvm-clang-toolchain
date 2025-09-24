@@ -26,7 +26,6 @@ jobs:
         pip3 install --upgrade meson==1.5.0  # Install a specific version of meson
         pip3 install sphinx sphinx_rtd_theme
 
-
     - name: Determine QEMU version
       id: qemu_version
       run: |
@@ -58,10 +57,10 @@ jobs:
       run: |
         rm -rf qemu/build
 
-    - name: Reconfigure QEMU build with meson
+    - name: Run meson setup to configure the build directory
       run: |
         cd qemu
-        meson setup build --reconfigure
+        meson setup build
 
     - name: Build QEMU with ninja
       run: |
