@@ -172,7 +172,6 @@ jobs:
           --pkggroup=emulators \
           --maintainer="GitHub Actions" \
           --summary="Custom built QEMU ${{ steps.version.outputs.qemu_version }}" \
-          --description="Custom built QEMU with KVM support and multiple architectures" \
           --backup=no \
           --deldoc=yes \
           --delspec=yes \
