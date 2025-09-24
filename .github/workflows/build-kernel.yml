@@ -56,9 +56,9 @@ jobs:
       - name: Configure Linux kernel for ${{ matrix.arch }}
         run: |
           if [ "${{ matrix.arch }}" == "arm64" ]; then
-            make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -C $GITHUB_WORKSPACE/arm64 defconfig
+            make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -C $GITHUB_WORKSPACE/../arm64 defconfig
           elif [ "${{ matrix.arch }}" == "riscv" ]; then
-            make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- -C $GITHUB_WORKSPACE/riscv defconfig
+            make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- -C $GITHUB_WORKSPACE/../riscv defconfig
           fi
 
       - name: Build Linux kernel for ${{ matrix.arch }}
