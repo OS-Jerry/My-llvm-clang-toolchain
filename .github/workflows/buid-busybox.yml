@@ -151,41 +151,46 @@ jobs:
         # Check if it's the right architecture
         /opt/riscv${{ matrix.arch }}/bin/riscv${{ matrix.arch }}-unknown-linux-gnu-objdump -f busybox | head -10
 
+
     - name: Create installation package
       run: |
+        # 准备打包目录
         mkdir -p /tmp/busybox-package
-        cd busybox
-        
-        # Copy busybox binary
-        cp busybox /tmp/busybox-package/
-        
-        # Create symlinks for common commands (like busybox normally does)
         cd /tmp/busybox-package
-        ./busybox --list | while read cmd; do
+
+        # 复制编译好的 RISC-V busybox
+        cp ../busybox/busybox .
+
+        # 手动生成常见命令的 symlinks（无需执行 busybox）
+        COMMANDS=$(cat ../busybox/Documentation/built-in-commands | tr '\n' ' ')
+        for cmd in $COMMANDS; do
           if [ "$cmd" != "busybox" ]; then
-            ln -sf busybox "$cmd" 2>/dev/null || true
+            ln -sf busybox "$cmd"
           fi
         done
-        
-        # Create info file
+
+        # 生成 README.txt
         cat > README.txt << EOF
-        Busybox ${{ steps.version.outputs.busybox_version }} for RISC-V ${{ matrix.arch }}-bit
-        
-        Built on: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
-        Target: riscv${{ matrix.arch }}-unknown-linux-gnu
-        
-        Usage:
-        1. Copy busybox to your target system
-        2. Create symlinks: ./busybox --install -s .
-        3. Or run commands directly: ./busybox ls, ./busybox sh, etc.
-        
-        Available commands:
-        EOF
-        ./busybox --list >> README.txt
-        
-        # Create tar.gz package
+    Busybox ${{ steps.version.outputs.busybox_version }} for RISC-V ${{ matrix.arch }}-bit
+
+    Built on: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+    Target: riscv${{ matrix.arch }}-unknown-linux-gnu
+
+    Usage:
+    1. Copy busybox to your target system
+    2. Create symlinks: ./busybox --install -s .
+    3. Or run commands directly: ./busybox ls, ./busybox sh, etc.
+
+    Available commands:
+    EOF
+
+        # 将命令列表追加到 README
+        echo $COMMANDS | tr ' ' '\n' >> README.txt
+
+        # 创建 tar.gz 包
         cd /tmp
         tar -czf ${{ steps.version.outputs.release_name }}.tar.gz -C busybox-package .
+
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
