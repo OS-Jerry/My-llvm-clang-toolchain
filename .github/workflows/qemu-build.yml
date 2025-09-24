@@ -171,15 +171,18 @@ jobs:
         # Copy installed files to package structure
         cp -r /tmp/qemu-install/usr/local/* /tmp/deb-package/usr/local/
         
+        # Strip 'v' prefix from version for Debian compatibility
+        DEB_VERSION=$(echo "${{ steps.version.outputs.qemu_version }}" | sed 's/^v//')
+        
         # Create control file
         cat > /tmp/deb-package/DEBIAN/control << EOF
         Package: qemu-custom
-        Version: ${{ steps.version.outputs.qemu_version }}
+        Version: ${DEB_VERSION}
         Architecture: amd64
         Section: emulators
         Priority: optional
         Maintainer: GitHub Actions
-        Description: Custom built QEMU ${{ steps.version.outputs.qemu_version }}
+        Description: Custom built QEMU ${DEB_VERSION}
          Custom built QEMU with KVM support and multiple architectures.
          Includes x86_64, aarch64, and riscv64 system and user emulation.
         EOF

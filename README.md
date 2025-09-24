@@ -21,6 +21,9 @@ git push origin llvmorg-21.1.0 -f
 
 ## 三、QEMU
 
+```bash
+ git add . && git commit -m "qemu" && git tag v10.1.0 -f && git push origin main && git push origin v10.1.0 -f
+```
 
 ## 四、HAOC (Custom OS)
 
