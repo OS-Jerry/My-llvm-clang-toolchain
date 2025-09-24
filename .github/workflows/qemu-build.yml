@@ -22,8 +22,10 @@ jobs:
         sudo apt-get install -y libaio-dev libfdt-dev liblzo2-dev librdmacm-dev libibverbs-dev
         sudo apt-get install -y libnuma-dev libusbredirparser-dev libvirglrenderer-dev
         sudo apt-get install -y libslirp-dev libbrlapi-dev libcapstone-dev liburing-dev
-        sudo apt-get install -y python3 python3-pip python3-venv ninja-build meson checkinstall
+        sudo apt-get install -y python3 python3-pip python3-venv ninja-build checkinstall
+        pip3 install --upgrade meson==1.5.0  # Install a specific version of meson
         pip3 install sphinx sphinx_rtd_theme
+
 
     - name: Determine QEMU version
       id: qemu_version
