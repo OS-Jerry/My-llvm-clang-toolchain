@@ -12,7 +12,6 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-
     - name: Install dependencies
       run: |
         sudo apt-get update
@@ -25,8 +24,6 @@ jobs:
         sudo apt-get install -y libslirp-dev libbrlapi-dev libcapstone-dev liburing-dev
         sudo apt-get install -y python3 python3-pip python3-venv ninja-build meson checkinstall
         pip3 install sphinx sphinx_rtd_theme
-
-
 
     - name: Determine QEMU version
       id: qemu_version
