@@ -18,6 +18,11 @@ git push origin llvmorg-21.1.0 -f
 
 ## 二、OS (Aarch64 and Riscv64)
 
+```bash
+git tag v6.6 -f
+git push origin v6.6 -f
+```
+
 
 ## 三、QEMU
 

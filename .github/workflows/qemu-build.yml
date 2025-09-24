@@ -11,6 +11,10 @@ on:
         required: false
         default: 'latest'
 
+permissions:
+  contents: write
+  actions: read
+
 env:
   DEFAULT_QEMU_VERSION: "v10.1.0"
 
@@ -282,6 +286,5 @@ jobs:
           ./packages/${{ needs.build-qemu.outputs.release_name }}.deb
         draft: false
         prerelease: false
-        make_latest: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
