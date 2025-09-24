@@ -164,23 +164,28 @@ jobs:
 
     - name: Create .deb package
       run: |
-        cd qemu
-        sudo checkinstall \
-          --pkgname=qemu-custom \
-          --pkgversion="${{ steps.version.outputs.qemu_version }}" \
-          --pkgarch=amd64 \
-          --pkggroup=emulators \
-          --maintainer="GitHub Actions" \
-          --summary="Custom built QEMU ${{ steps.version.outputs.qemu_version }}" \
-          --backup=no \
-          --deldoc=yes \
-          --delspec=yes \
-          --default \
-          --install=no \
-          make install
+        # Create .deb package structure
+        mkdir -p /tmp/deb-package/DEBIAN
+        mkdir -p /tmp/deb-package/usr/local
         
-        # Move deb package to temp directory
-        sudo mv *.deb /tmp/${{ steps.version.outputs.release_name }}.deb
+        # Copy installed files to package structure
+        cp -r /tmp/qemu-install/usr/local/* /tmp/deb-package/usr/local/
+        
+        # Create control file
+        cat > /tmp/deb-package/DEBIAN/control << EOF
+        Package: qemu-custom
+        Version: ${{ steps.version.outputs.qemu_version }}
+        Architecture: amd64
+        Section: emulators
+        Priority: optional
+        Maintainer: GitHub Actions
+        Description: Custom built QEMU ${{ steps.version.outputs.qemu_version }}
+         Custom built QEMU with KVM support and multiple architectures.
+         Includes x86_64, aarch64, and riscv64 system and user emulation.
+        EOF
+        
+        # Build the .deb package
+        dpkg-deb --build /tmp/deb-package /tmp/${{ steps.version.outputs.release_name }}.deb
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
