@@ -28,12 +28,9 @@ jobs:
     - name: Determine QEMU version
       id: qemu_version
       run: |
-        # 默认版本（可手动更新为最新已知稳定版）
         DEFAULT_VERSION="v10.1.0"
-        # 如果是tag，尝试匹配QEMU官方tag
         if [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
           TAG_NAME="${{ github.ref_name }}"
-          # 检查QEMU官方仓库是否有此tag
           if git ls-remote --tags https://github.com/qemu/qemu.git | grep -q "refs/tags/$TAG_NAME$"; then
             echo "Using QEMU tag: $TAG_NAME"
             echo "QEMU_VERSION=$TAG_NAME" >> $GITHUB_OUTPUT
@@ -42,7 +39,6 @@ jobs:
             echo "QEMU_VERSION=$DEFAULT_VERSION" >> $GITHUB_OUTPUT
           fi
         else
-          # 非tag时，获取最新稳定版（排除rc/pre-release）
           LATEST_VERSION=$(git ls-remote --tags https://github.com/qemu/qemu.git | \
                            grep -o 'refs/tags/v[0-9]\+\.[0-9]\+\.[0-9]\+$' | \
                            sort -V | tail -n 1 | sed 's|refs/tags/||')
@@ -56,26 +52,16 @@ jobs:
           https://github.com/qemu/qemu.git
         cd qemu
 
-    - name: Configure QEMU build
+    - name: Clean previous build directory (optional but recommended)
+      run: |
+        rm -rf qemu/build
+
+    - name: Reconfigure QEMU build with meson
       run: |
         cd qemu
-        mkdir build
-        cd build
-        ../configure \
-          --enable-kvm \
-          --target-list="x86_64-softmmu,aarch64-softmmu,riscv64-softmmu" \
-          --prefix=$PWD/install \
-          --enable-slirp \
-          --enable-virtfs \
-          --enable-vhost-net \
-          --enable-spice \
-          --enable-usb-redir \
-          --enable-lzo \
-          --enable-guest-agent \
-          --enable-docs \
-          --enable-tools
+        meson setup build --reconfigure
 
-    - name: Build QEMU
+    - name: Build QEMU with ninja
       run: |
         cd qemu/build
         ninja -j$(nproc)
@@ -97,7 +83,7 @@ jobs:
     - name: Install and package QEMU as .tar.gz
       run: |
         cd qemu/build
-        sudo make install
+        sudo meson install
         cd install
         tar -czf qemu-toolchain-${{ github.ref_name }}.tar.gz bin/
 
@@ -112,7 +98,6 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # 删除同名Release（支持覆盖）
         RELEASE_NAME="${{ github.ref_name }}"
         RELEASE_ID=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
           https://api.github.com/repos/${{ github.repository }}/releases | \
