@@ -3,7 +3,7 @@ name: Build and Release Busybox for RISC-V
 on:
   push:
     branches: [ main, master ]
-    tags: [ 'v*' ]  # Trigger on version tags like v1.36.1
+    tags: [ 'v*' ]
   workflow_dispatch:
     inputs:
       busybox_version:
@@ -33,30 +33,20 @@ jobs:
     strategy:
       matrix:
         arch: [32, 64]
-    
+
     outputs:
       busybox_version: ${{ steps.version.outputs.busybox_version }}
       release_name: ${{ steps.version.outputs.release_name }}
-    
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Install RISC-V toolchain
+    - name: Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          build-essential \
-          git \
-          curl \
-          wget \
-          tar \
-          xz-utils \
-          flex \
-          bison \
-          libncurses-dev \
-          bc
-
+          build-essential git curl wget tar xz-utils flex bison libncurses-dev bc
 
     - name: Setup RISC-V GNU Toolchain
       run: |
@@ -69,7 +59,7 @@ jobs:
         echo "Downloading toolchain from: $TOOLCHAIN_URL"
         wget -q "$TOOLCHAIN_URL" -O toolchain.tar.gz
 
-        # 解压到 /opt/riscv32 或 /opt/riscv64
+        # 解压到 /opt/riscv32 或 /opt/riscv64，strip-components=1 避免多层目录
         sudo mkdir -p /opt/riscv${{ matrix.arch }}
         sudo tar -xzf toolchain.tar.gz -C /opt/riscv${{ matrix.arch }} --strip-components=1
 
@@ -79,33 +69,24 @@ jobs:
         # 验证
         /opt/riscv${{ matrix.arch }}/bin/riscv${{ matrix.arch }}-unknown-linux-gnu-gcc --version
 
-
     - name: Determine Busybox version
       id: version
       run: |
         if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-          # Manual trigger
           if [[ "${{ github.event.inputs.busybox_version }}" == "latest" ]]; then
-            # Get latest stable version from Busybox git tags
             BUSYBOX_VERSION=$(git ls-remote --tags https://git.busybox.net/busybox | \
                              grep -o 'refs/tags/[0-9_]\+$' | \
                              sort -V | tail -n 1 | sed 's|refs/tags/||')
-            echo "Using latest Busybox version: $BUSYBOX_VERSION"
           else
             BUSYBOX_VERSION="${{ github.event.inputs.busybox_version }}"
-            echo "Using manually specified Busybox version: $BUSYBOX_VERSION"
           fi
         elif [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
-          # Tag push - convert v1.36.1 to 1_36_1 format
           TAG_NAME="${{ github.ref_name }}"
           BUSYBOX_VERSION=$(echo "$TAG_NAME" | sed 's/^v//' | sed 's/\./_/g')
-          echo "Using Busybox version from tag: $BUSYBOX_VERSION"
         else
-          # Branch push - use default
           BUSYBOX_VERSION="$DEFAULT_BUSYBOX_VERSION"
-          echo "Using default Busybox version: $BUSYBOX_VERSION"
         fi
-        
+
         echo "busybox_version=$BUSYBOX_VERSION" >> $GITHUB_OUTPUT
         echo "release_name=busybox-riscv${{ matrix.arch }}-$BUSYBOX_VERSION" >> $GITHUB_OUTPUT
 
@@ -125,43 +106,24 @@ jobs:
     - name: Configure Busybox
       run: |
         cd busybox
-        
-        # Clean any previous build
         make clean || true
-        
-        # Configure with default config
         CROSS_COMPILE=riscv${{ matrix.arch }}-unknown-linux-gnu- make defconfig
-        
-        # Show configuration
-        echo "=== Busybox Configuration ==="
         CROSS_COMPILE=riscv${{ matrix.arch }}-unknown-linux-gnu- make kernelversion
 
     - name: Build Busybox
       run: |
         cd busybox
-        
-        # Build Busybox
         CROSS_COMPILE=riscv${{ matrix.arch }}-unknown-linux-gnu- make -j$(nproc)
-        
-        # Verify the binary
-        echo "=== Build Results ==="
-        ls -la busybox
-        file busybox
-        
-        # Check if it's the right architecture
-        /opt/riscv${{ matrix.arch }}/bin/riscv${{ matrix.arch }}-unknown-linux-gnu-objdump -f busybox | head -10
-
 
     - name: Create installation package
       run: |
-        # 准备打包目录
         mkdir -p /tmp/busybox-package
         cd /tmp/busybox-package
 
-        # 复制编译好的 RISC-V busybox
+        # 复制 RISC-V busybox
         cp ../busybox/busybox .
 
-        # 手动生成常见命令的 symlinks（无需执行 busybox）
+        # 手动生成 symlinks，不执行二进制
         COMMANDS=$(cat ../busybox/Documentation/built-in-commands | tr '\n' ' ')
         for cmd in $COMMANDS; do
           if [ "$cmd" != "busybox" ]; then
@@ -169,42 +131,39 @@ jobs:
           fi
         done
 
-        # 生成 README.txt
+        # 生成 README
         cat > README.txt << EOF
-    Busybox ${{ steps.version.outputs.busybox_version }} for RISC-V ${{ matrix.arch }}-bit
+Busybox ${{ steps.version.outputs.busybox_version }} for RISC-V ${{ matrix.arch }}-bit
 
-    Built on: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
-    Target: riscv${{ matrix.arch }}-unknown-linux-gnu
+Built on: $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+Target: riscv${{ matrix.arch }}-unknown-linux-gnu
 
-    Usage:
-    1. Copy busybox to your target system
-    2. Create symlinks: ./busybox --install -s .
-    3. Or run commands directly: ./busybox ls, ./busybox sh, etc.
+Usage:
+1. Copy busybox to your target system
+2. Create symlinks: ./busybox --install -s .
+3. Or run commands directly: ./busybox ls, ./busybox sh, etc.
 
-    Available commands:
-    EOF
+Available commands:
+EOF
 
-        # 将命令列表追加到 README
         echo $COMMANDS | tr ' ' '\n' >> README.txt
 
-        # 创建 tar.gz 包
+        # 打包 tar.gz
         cd /tmp
         tar -czf ${{ steps.version.outputs.release_name }}.tar.gz -C busybox-package .
-
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
         name: ${{ steps.version.outputs.release_name }}
-        path: |
-          /tmp/${{ steps.version.outputs.release_name }}.tar.gz
+        path: /tmp/${{ steps.version.outputs.release_name }}.tar.gz
         retention-days: 30
 
   release:
     needs: build-busybox
     runs-on: ubuntu-22.04
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-    
+
     steps:
     - name: Download all build artifacts
       uses: actions/download-artifact@v4
@@ -213,15 +172,8 @@ jobs:
 
     - name: Prepare release assets
       run: |
-        echo "=== Available packages ==="
-        find ./packages -name "*.tar.gz" -type f
-        
-        # Move all packages to a single directory
         mkdir -p ./release-assets
-        find ./packages -name "*.tar.gz" -type f -exec cp {} ./release-assets/ \;
-        
-        echo "=== Release assets ==="
-        ls -la ./release-assets/
+        find ./packages -name "*.tar.gz" -exec cp {} ./release-assets/ \;
 
     - name: Delete existing release if it exists
       if: startsWith(github.ref, 'refs/tags/')
@@ -229,19 +181,11 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         RELEASE_TAG="${{ github.ref_name }}"
-        
-        # Check if release exists
         RELEASE_ID=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
-          "https://api.github.com/repos/${{ github.repository }}/releases/tags/$RELEASE_TAG" | \
-          jq -r '.id // empty')
-        
+          "https://api.github.com/repos/${{ github.repository }}/releases/tags/$RELEASE_TAG" | jq -r '.id // empty')
         if [ ! -z "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
-          echo "Deleting existing release with ID: $RELEASE_ID"
           curl -s -X DELETE -H "Authorization: Bearer $GITHUB_TOKEN" \
             "https://api.github.com/repos/${{ github.repository }}/releases/$RELEASE_ID"
-          echo "Existing release deleted"
-        else
-          echo "No existing release found for tag $RELEASE_TAG"
         fi
 
     - name: Create GitHub Release
@@ -251,67 +195,20 @@ jobs:
         name: "Busybox ${{ needs.build-busybox.outputs.busybox_version }} for RISC-V"
         body: |
           # Busybox Release ${{ needs.build-busybox.outputs.busybox_version }} for RISC-V
-          
+
           Cross-compiled Busybox based on upstream version **${{ needs.build-busybox.outputs.busybox_version }}**.
-          
+
           ## Features
           - ✅ RISC-V 32-bit and 64-bit architectures
           - ✅ Static linked for portability
           - ✅ Full set of Unix utilities in a single binary
           - ✅ Default configuration with most common tools
-          
-          ## Architecture Support
-          - **riscv32**: 32-bit RISC-V systems
-          - **riscv64**: 64-bit RISC-V systems
-          
+
           ## Usage
-          
-          ### Download and Extract
-          ```bash
-          # For RISC-V 64-bit
-          wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name || needs.build-busybox.outputs.busybox_version }}/busybox-riscv64-${{ needs.build-busybox.outputs.busybox_version }}.tar.gz
-          tar -xzf busybox-riscv64-${{ needs.build-busybox.outputs.busybox_version }}.tar.gz
-          
-          # For RISC-V 32-bit
-          wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name || needs.build-busybox.outputs.busybox_version }}/busybox-riscv32-${{ needs.build-busybox.outputs.busybox_version }}.tar.gz
-          tar -xzf busybox-riscv32-${{ needs.build-busybox.outputs.busybox_version }}.tar.gz
-          ```
-          
-          ### Installation Options
-          
-          #### Option 1: Install Symlinks
-          ```bash
-          # This creates symlinks for all available commands
-          ./busybox --install -s .
-          ./ls  # Now you can use individual commands
-          ./sh  # Busybox shell
-          ```
-          
-          #### Option 2: Direct Usage
-          ```bash
-          ./busybox ls     # List files
-          ./busybox sh     # Start shell
-          ./busybox cat /etc/hostname
-          ./busybox --help # Show help
-          ```
-          
-          ### QEMU Usage Example
-          Perfect for use with QEMU RISC-V emulation:
-          ```bash
-          # Copy to your RISC-V root filesystem
-          cp busybox /path/to/riscv/rootfs/bin/
-          
-          # In QEMU RISC-V system
-          /bin/busybox --install -s /bin
-          ```
-          
-          ## Available Commands
-          Run `./busybox --list` to see all available commands (typically 300+ utilities).
-          
-          Built on: $(date -u '+%Y-%m-%d %H:%M:%S UTC')  
-          Toolchain: riscv-gnu-toolchain 2024.02.02
+          Run commands on your RISC-V target system as described in README.
         files: ./release-assets/*
         draft: false
         prerelease: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
