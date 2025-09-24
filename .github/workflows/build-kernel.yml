@@ -32,6 +32,19 @@ jobs:
           repository: torvalds/linux
           ref: ${{ github.event.inputs.version || 'v6.6' }}
 
+      - name: Checkout defconfig repository
+        uses: actions/checkout@v4
+        with:
+          path: defconfig-repo
+          repository: OS-Jerry/My-llvm-clang-toolchain
+          ref: main  # Make sure you are on the correct branch that contains the defconfig files
+
+
+      - name: Copy defconfig files to Linux kernel source
+        run: |
+           cp defconfig-repo/riscv/defconfig $GITHUB_WORKSPACE/arch/riscv/configs/defconfig
+           cp defconfig-repo/arm64/defconfig $GITHUB_WORKSPACE/arch/arm64/configs/defconfig
+
       - name: Setup Clang Toolchain
         run: |
           mkdir -p /opt/llvm
@@ -56,9 +69,9 @@ jobs:
       - name: Configure Linux kernel for ${{ matrix.arch }}
         run: |
           if [ "${{ matrix.arch }}" == "arm64" ]; then
-            make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -C $GITHUB_WORKSPACE/../arm64/defconfig
+            make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
           elif [ "${{ matrix.arch }}" == "riscv" ]; then
-            make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- -C $GITHUB_WORKSPACE/../riscv/defconfig
+            make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- defconfig
           fi
 
       - name: Build Linux kernel for ${{ matrix.arch }}
